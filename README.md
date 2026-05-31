@@ -16,7 +16,7 @@ Jellyseerr  →  Akwarr (Radarr/Sonarr API)  →  Akwam + FlareSolverr + aria2
 
 - **Jellyseerr-native requests** — add Akwarr as extra Radarr/Sonarr servers; users pick Arabic in Advanced Requests
 - **TMDB + IMDb + ElCinema metadata** — Jellyfin NFO sidecars include TMDB, IMDb, and ElCinema IDs when available
-- **ElCinema Arabic title bridge** — converts Jellyseerr/TMDB English titles into Arabic search candidates before Akwam lookup and stores the matched ElCinema work URL
+- **Arabic-first Akwam matching** — converts Jellyseerr/TMDB English titles into Arabic search candidates with ElCinema, then searches Akwam with Arabic candidates only when any Arabic title is available
 - **Akwam artwork fallback** — saves `poster.jpg` / `fanart.jpg` from Akwam when useful
 - **Jellyfin-friendly layout** — standard movie folders and `Season XX/SxxExx` episode naming
 - **HTTP downloads via aria2** — Akwam direct links (not torrents; Deluge stays English-only)

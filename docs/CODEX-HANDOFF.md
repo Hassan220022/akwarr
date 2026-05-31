@@ -501,6 +501,7 @@ Pick based on what verification shows:
 
 - Jellyseerr only discovers TMDB titles
 - ElCinema bridge improves Arabic Akwam matching, but still starts from Jellyseerr/TMDB requests
+- If ElCinema or TMDB `originalTitle` provides Arabic text, Akwarr searches Akwam with Arabic candidates only; English fallback is used only when no Arabic candidate exists.
 - Akwam availability varies; FlareSolverr required
 - English stack intentionally separate (no shared Radarr instance)
 

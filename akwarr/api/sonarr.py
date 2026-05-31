@@ -12,6 +12,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from akwarr.api.admin import create_admin_router
 from akwarr.api.auth import verify_api_key
+from akwarr.api.matching import best_arabic_akwam_match
 from akwarr.api.queue import queue_payload
 from akwarr.config import get_settings
 from akwarr.core.store import Store
@@ -218,8 +219,13 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
             )
         except Exception:
             logger.exception("ElCinema lookup failed for TMDB %s (%s)", tmdb_id, title)
-    alt_queries = _unique_queries(*arabic_queries, *base_queries)
-    match = await scraper.best_match(title, section="series", alt_queries=alt_queries)
+    match = await best_arabic_akwam_match(
+        scraper,
+        fallback_title=title,
+        section="series",
+        arabic_queries=arabic_queries,
+        base_queries=base_queries,
+    )
 
     poster = TMDBClient.poster_url(tmdb_data.get("poster_path"))
     fanart = TMDBClient.poster_url(tmdb_data.get("backdrop_path"))

@@ -442,7 +442,7 @@ async def test_radarr_add_movie_uses_elcinema_arabic_candidates(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    captured: dict[str, object] = {"alt_queries": None}
+    captured: dict[str, object] = {"query": None, "alt_queries": None}
 
     class FakeStore:
         async def add_movie(self, data):
@@ -473,6 +473,7 @@ async def test_radarr_add_movie_uses_elcinema_arabic_candidates(
             pass
 
         async def best_match(self, query, *, section, alt_queries):
+            captured["query"] = query
             captured["alt_queries"] = alt_queries
             return SimpleNamespace(url="https://akwam.it/movie/test", poster=None)
 
@@ -509,10 +510,80 @@ async def test_radarr_add_movie_uses_elcinema_arabic_candidates(
         )
     )
 
-    assert captured["alt_queries"] == ["الفيل الأزرق", "The Blue Elephant"]
+    assert captured["query"] == "الفيل الأزرق"
+    assert captured["alt_queries"] == []
     assert captured["movie"]["metadata"]["imdb_id"] == "tt3461252"
     assert captured["movie"]["metadata"]["elcinema"]["id"] == "2019662"
     assert captured["movie"]["metadata"]["elcinema"]["url"] == "https://elcinema.com/work/2019662"
+
+
+@pytest.mark.asyncio
+async def test_radarr_add_movie_prefers_arabic_original_title_without_elcinema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {"query": None, "alt_queries": None}
+
+    class FakeStore:
+        async def add_movie(self, data):
+            captured["movie"] = data
+            return {"id": 1, "path": None, "added": None, **data}
+
+    class FakeTMDBClient:
+        def __init__(self, settings):
+            pass
+
+        async def movie(self, tmdb_id):
+            return {
+                "title": "Baba Almgal",
+                "original_title": "بابا المجال",
+                "year": 2023,
+                "overview": "",
+                "poster_path": None,
+                "backdrop_path": None,
+            }
+
+        @staticmethod
+        def poster_url(path):
+            return None
+
+    class FakeAkwamScraper:
+        def __init__(self, settings):
+            pass
+
+        async def best_match(self, query, *, section, alt_queries):
+            captured["query"] = query
+            captured["alt_queries"] = alt_queries
+            return SimpleNamespace(url="https://akwam.it/movie/baba", poster=None)
+
+        async def fetch_metadata(self, url, *, kind):
+            return SimpleNamespace(poster=None, fanart=None, overview=None)
+
+    class FakeElCinemaScraper:
+        def __init__(self, settings):
+            pass
+
+        async def matched_candidates(self, *queries, year, kind):
+            return []
+
+    monkeypatch.setenv("MOVIES_PATH", str(tmp_path / "movies"))
+    get_settings.cache_clear()
+    monkeypatch.setattr(radarr, "store", FakeStore())
+    monkeypatch.setattr(radarr, "TMDBClient", FakeTMDBClient)
+    monkeypatch.setattr(radarr, "AkwamScraper", FakeAkwamScraper)
+    monkeypatch.setattr(radarr, "ElCinemaScraper", FakeElCinemaScraper)
+
+    await radarr.add_movie(
+        radarr.MovieAddBody(
+            title="Baba Almgal",
+            tmdbId=218323,
+            rootFolderPath=str(tmp_path / "movies"),
+            addOptions={"searchForMovie": False},
+        )
+    )
+
+    assert captured["query"] == "بابا المجال"
+    assert captured["alt_queries"] == []
 
 
 @pytest.mark.asyncio
@@ -520,7 +591,7 @@ async def test_sonarr_add_series_uses_elcinema_arabic_candidates(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    captured: dict[str, object] = {"alt_queries": None}
+    captured: dict[str, object] = {"query": None, "alt_queries": None}
 
     class FakeStore:
         async def add_series(self, data):
@@ -554,6 +625,7 @@ async def test_sonarr_add_series_uses_elcinema_arabic_candidates(
             pass
 
         async def best_match(self, query, *, section, alt_queries):
+            captured["query"] = query
             captured["alt_queries"] = alt_queries
             return SimpleNamespace(url="https://akwam.it/series/test", poster=None)
 
@@ -590,7 +662,8 @@ async def test_sonarr_add_series_uses_elcinema_arabic_candidates(
         )
     )
 
-    assert captured["alt_queries"] == ["ما وراء الطبيعة", "Paranormal"]
+    assert captured["query"] == "ما وراء الطبيعة"
+    assert captured["alt_queries"] == []
     assert captured["series"]["metadata"]["imdb_id"] == "tt12411074"
     assert captured["series"]["metadata"]["elcinema"]["id"] == "2058052"
     assert captured["series"]["metadata"]["elcinema"]["url"] == "https://elcinema.com/work/2058052"
