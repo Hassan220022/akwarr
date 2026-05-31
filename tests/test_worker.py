@@ -1,3 +1,4 @@
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -180,10 +181,19 @@ class FakeEpisodeImportStore(FakeStore):
             "original_title": "سيد الناس",
             "year": 2025,
             "tmdb_id": 2087914,
+            "tvdb_id": 431975,
             "overview": "اختبار",
             "poster_url": None,
             "fanart_url": None,
             "path": None,
+            "metadata": {
+                "imdb_id": "tt32006014",
+                "elcinema": {
+                    "id": "2087914",
+                    "url": "https://elcinema.com/work/2087914",
+                    "title": "سيد الناس",
+                },
+            },
         }
 
     async def set_episode_file(self, episode_id: int, path: str, has_file: bool = True) -> None:
@@ -223,8 +233,15 @@ async def test_import_episode_writes_jellyfin_metadata_under_series_root(tmp_pat
 
     final = settings.series_path / "سيد الناس (2025)" / "Season 01" / "سيد الناس - S01E02 - الحلقة 2 720p.mp4"
     assert final.read_text() == "video"
-    assert (settings.series_path / "سيد الناس (2025)" / "tvshow.nfo").exists()
+    tvshow_nfo = settings.series_path / "سيد الناس (2025)" / "tvshow.nfo"
+    assert tvshow_nfo.exists()
     assert (settings.series_path / "سيد الناس (2025)" / "Season 01" / "S01E02.nfo").exists()
+    root = ET.parse(tvshow_nfo).getroot()
+    assert root.find("uniqueid[@type='tmdb'][@default='true']").text == "2087914"
+    assert root.find("uniqueid[@type='imdb']").text == "tt32006014"
+    assert root.find("uniqueid[@type='tvdb']").text == "431975"
+    assert root.find("uniqueid[@type='elcinema']").text == "2087914"
+    assert root.findtext("elcinemaurl") == "https://elcinema.com/work/2087914"
     assert worker.store.episode_file == (123, str(final), True)
     assert worker.store.series_path == (7, str(settings.series_path / "سيد الناس (2025)"))
     assert worker.organizer.jellyfin.refreshed == [str(final.parent)]

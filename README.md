@@ -15,8 +15,8 @@ Jellyseerr  →  Akwarr (Radarr/Sonarr API)  →  Akwam + FlareSolverr + aria2
 ## Features
 
 - **Jellyseerr-native requests** — add Akwarr as extra Radarr/Sonarr servers; users pick Arabic in Advanced Requests
-- **TMDB-first metadata** — NFO files with TMDB IDs so Jellyfin matches titles and artwork
-- **ElCinema Arabic title bridge** — converts Jellyseerr/TMDB English titles into Arabic search candidates before Akwam lookup
+- **TMDB + IMDb + ElCinema metadata** — Jellyfin NFO sidecars include TMDB, IMDb, and ElCinema IDs when available
+- **ElCinema Arabic title bridge** — converts Jellyseerr/TMDB English titles into Arabic search candidates before Akwam lookup and stores the matched ElCinema work URL
 - **Akwam artwork fallback** — saves `poster.jpg` / `fanart.jpg` from Akwam when useful
 - **Jellyfin-friendly layout** — standard movie folders and `Season XX/SxxExx` episode naming
 - **HTTP downloads via aria2** — Akwam direct links (not torrents; Deluge stays English-only)
@@ -87,7 +87,7 @@ Akwarr exposes an API-key protected monitor on both shim containers:
 - Sonarr mode: `http://<host>:8990/ui?apikey=<AKWARR_API_KEY>`
 - LAN-only homelab URL: `https://akwam.mikawi.org/ui`
 
-The monitor shows ElCinema Arabic title candidates, Akwam search results, metadata/download links, recent jobs, failed errors, active download percent/speed/ETA, and imported files under `/media/Movie/Arabic` and `/media/Serries/Arabic`.
+The monitor shows ElCinema Arabic title candidates, Akwam search results, metadata/download links, recent jobs, failed errors, active download percent/speed/ETA, and imported files under `/media/Movie/Arabic` and `/media/Serries/Arabic`. Active downloads can be paused, resumed, or deleted from the jobs table.
 
 The Akwarr API is also available on the same LAN-only host without a query API key, for example `https://akwam.mikawi.org/api/v3/system/status`. The LAN proxy injects `X-Api-Key`; direct container access still requires the normal key.
 
@@ -112,8 +112,11 @@ Create two libraries:
 Recommended library settings:
 
 - Metadata language: **Arabic**
+- Local metadata/NFO reader: **On**
 - Save artwork into media folders: **On**
 - Save metadata into media folders: **On**
+
+Akwarr writes `movie.nfo` and `tvshow.nfo` with Jellyfin-readable `uniqueid` entries for TMDB plus IMDb and ElCinema when those IDs are available. ElCinema is also used before Akwam search so English Jellyseerr/TMDB titles can auto-search Arabic movie and series titles.
 
 ## Homelab integration (CT107)
 
@@ -151,8 +154,8 @@ See [`.env.example`](.env.example) for the full list. Key values:
 | Variable                            | Description                          |
 | ----------------------------------- | ------------------------------------ |
 | `AKWARR_API_KEY`                    | Jellyseerr X-Api-Key                 |
-| `TMDB_API_KEY`                      | TMDB metadata for titles + NFO       |
-| `ELCINEMA_ENABLE` / `ELCINEMA_BASE` | Arabic title bridge for Akwam search |
+| `TMDB_API_KEY`                      | TMDB/IMDb metadata for titles + NFO  |
+| `ELCINEMA_ENABLE` / `ELCINEMA_BASE` | Arabic title bridge + NFO source URL |
 | `ARIA2_SECRET`                      | aria2 JSON-RPC token, default `P3TERX` |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Trigger library refresh after import |
 | `MOVIES_PATH` / `SERIES_PATH`       | Final media destinations             |

@@ -16,12 +16,24 @@ def utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _json_dict(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 class JobStatus(StrEnum):
     PENDING = "pending"
     DOWNLOADING = "downloading"
+    PAUSED = "paused"
     IMPORTING = "importing"
     COMPLETED = "completed"
     FAILED = "failed"
+    DELETED = "deleted"
 
 
 class Store:
@@ -155,9 +167,16 @@ class Store:
                     original_title=excluded.original_title,
                     year=excluded.year,
                     overview=excluded.overview,
+                    poster_url=COALESCE(excluded.poster_url, movies.poster_url),
+                    fanart_url=COALESCE(excluded.fanart_url, movies.fanart_url),
+                    akwam_url=COALESCE(excluded.akwam_url, movies.akwam_url),
                     monitored=excluded.monitored,
                     quality_profile_id=excluded.quality_profile_id,
-                    root_folder_path=excluded.root_folder_path
+                    root_folder_path=excluded.root_folder_path,
+                    metadata_json=CASE
+                        WHEN excluded.metadata_json = '{}' THEN movies.metadata_json
+                        ELSE excluded.metadata_json
+                    END
                 """,
                 (
                     data["tmdb_id"],
@@ -239,6 +258,7 @@ class Store:
             "quality_profile_id": row["quality_profile_id"],
             "root_folder_path": row["root_folder_path"],
             "added": row["added"],
+            "metadata": _json_dict(row["metadata_json"]),
         }
 
     # ── Series ──
@@ -255,13 +275,24 @@ class Store:
                     quality_profile_id, language_profile_id, root_folder_path, added, metadata_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(tmdb_id) DO UPDATE SET
+                    tvdb_id=COALESCE(excluded.tvdb_id, series.tvdb_id),
                     title=excluded.title,
                     original_title=excluded.original_title,
                     year=excluded.year,
+                    overview=COALESCE(excluded.overview, series.overview),
+                    poster_url=COALESCE(excluded.poster_url, series.poster_url),
+                    fanart_url=COALESCE(excluded.fanart_url, series.fanart_url),
+                    akwam_url=COALESCE(excluded.akwam_url, series.akwam_url),
+                    path=COALESCE(excluded.path, series.path),
                     monitored=excluded.monitored,
+                    season_folder=excluded.season_folder,
                     quality_profile_id=excluded.quality_profile_id,
                     language_profile_id=excluded.language_profile_id,
-                    root_folder_path=excluded.root_folder_path
+                    root_folder_path=excluded.root_folder_path,
+                    metadata_json=CASE
+                        WHEN excluded.metadata_json = '{}' THEN series.metadata_json
+                        ELSE excluded.metadata_json
+                    END
                 """,
                 (
                     data["tmdb_id"],
@@ -331,6 +362,7 @@ class Store:
             "language_profile_id": row["language_profile_id"],
             "root_folder_path": row["root_folder_path"],
             "added": row["added"],
+            "metadata": _json_dict(row["metadata_json"]),
         }
 
     # ── Episodes ──

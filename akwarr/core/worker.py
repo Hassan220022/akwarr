@@ -184,9 +184,12 @@ class DownloadWorker:
             original_title=movie.get("original_title"),
             year=movie.get("year"),
             overview=movie.get("overview"),
-            imdb_id=None,
+            imdb_id=_metadata_value(movie, "imdb_id"),
             poster_url=movie.get("poster_url"),
             fanart_url=movie.get("fanart_url"),
+            elcinema_id=_elcinema_metadata(movie, "id"),
+            elcinema_url=_elcinema_metadata(movie, "url"),
+            elcinema_title=_elcinema_metadata(movie, "title"),
         )
         await self.store.set_movie_file(movie["id"], str(final), has_file=True)
 
@@ -223,7 +226,25 @@ class DownloadWorker:
             episode_title=episode.get("title") or f"Episode {episode['episode_number']}",
             poster_url=series.get("poster_url"),
             fanart_url=series.get("fanart_url"),
+            imdb_id=_metadata_value(series, "imdb_id"),
+            tvdb_id=series.get("tvdb_id"),
+            elcinema_id=_elcinema_metadata(series, "id"),
+            elcinema_url=_elcinema_metadata(series, "url"),
+            elcinema_title=_elcinema_metadata(series, "title"),
         )
         await self.store.set_episode_file(episode["id"], str(final), has_file=True)
         if not series.get("path"):
             await self.store.set_series_path(series["id"], str(show_folder))
+
+
+def _metadata_value(item: dict, key: str) -> str | None:
+    metadata = item.get("metadata") or {}
+    value = metadata.get(key) if isinstance(metadata, dict) else None
+    return str(value) if value else None
+
+
+def _elcinema_metadata(item: dict, key: str) -> str | None:
+    metadata = item.get("metadata") or {}
+    elcinema = metadata.get("elcinema") if isinstance(metadata, dict) else None
+    value = elcinema.get(key) if isinstance(elcinema, dict) else None
+    return str(value) if value else None

@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 
 from akwarr.api.auth import verify_api_key
 from akwarr.config import get_settings
-from akwarr.core.store import Store
+from akwarr.core.store import JobStatus, Store
 from akwarr.download.aria2 import Aria2Client
 from akwarr.scraper.akwam import AkwamMetadata, AkwamScraper
 from akwarr.scraper.elcinema import ElCinemaScraper
@@ -50,6 +50,31 @@ def create_admin_router(get_store: Callable[[], Store]) -> APIRouter:
             "jobs": jobs,
             "counts": _job_counts(jobs),
         }
+
+    @router.post("/api/v3/monitor/jobs/{job_id}/pause")
+    async def pause_job(job_id: int) -> dict[str, Any]:
+        job = await _get_job_or_404(get_store(), job_id)
+        gid = _job_gid_or_400(job)
+        await Aria2Client(get_settings()).pause(gid)
+        await get_store().update_job(job_id, status=JobStatus.PAUSED, error="")
+        return {"id": job_id, "status": JobStatus.PAUSED}
+
+    @router.post("/api/v3/monitor/jobs/{job_id}/resume")
+    async def resume_job(job_id: int) -> dict[str, Any]:
+        job = await _get_job_or_404(get_store(), job_id)
+        gid = _job_gid_or_400(job)
+        await Aria2Client(get_settings()).unpause(gid)
+        await get_store().update_job(job_id, status=JobStatus.DOWNLOADING, error="")
+        return {"id": job_id, "status": JobStatus.DOWNLOADING}
+
+    @router.delete("/api/v3/monitor/jobs/{job_id}")
+    async def delete_job(job_id: int) -> dict[str, Any]:
+        job = await _get_job_or_404(get_store(), job_id)
+        gid = str(job.get("aria2_gid") or "")
+        if gid:
+            await Aria2Client(get_settings()).force_remove(gid)
+        await get_store().update_job(job_id, status=JobStatus.DELETED, error="deleted from monitor")
+        return {"id": job_id, "status": JobStatus.DELETED}
 
     @router.get("/api/v3/akwam/search")
     async def akwam_search(
@@ -139,11 +164,25 @@ def _job_counts(jobs: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+async def _get_job_or_404(store: Store, job_id: int) -> dict[str, Any]:
+    job = await store.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+def _job_gid_or_400(job: dict[str, Any]) -> str:
+    gid = str(job.get("aria2_gid") or "")
+    if not gid:
+        raise HTTPException(status_code=400, detail="Job has no aria2 download id")
+    return gid
+
+
 async def _with_download_progress(jobs: list[dict[str, Any]], aria2: Aria2Client) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for job in jobs:
         item = dict(job)
-        if item.get("status") == "downloading" and item.get("aria2_gid"):
+        if item.get("status") in {"downloading", "paused"} and item.get("aria2_gid"):
             try:
                 status = await aria2.tell_status(str(item["aria2_gid"]))
                 item.update(_download_progress(status))
@@ -361,8 +400,30 @@ ADMIN_HTML = r"""<!doctype html>
       font-weight: 800;
     }
     .tag.pending, .tag.downloading, .tag.importing { background: var(--amber); }
+    .tag.paused { background: var(--cyan); }
     .tag.failed { background: var(--red); }
+    .tag.deleted { background: var(--muted); }
     .tag.metadata { background: var(--cyan); }
+    .actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 128px;
+    }
+    .actions button {
+      width: 34px;
+      padding: 0;
+      font-size: 14px;
+    }
+    .actions button.danger {
+      border-color: #6a3438;
+      background: #3a2023;
+      color: #ffd8d8;
+    }
+    .actions button:disabled {
+      cursor: not-allowed;
+      opacity: .45;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -443,7 +504,7 @@ ADMIN_HTML = r"""<!doctype html>
       </section>
       <section>
         <h2>Download Jobs</h2>
-        <div class="pane"><table><thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Destination</th><th>Error</th></tr></thead><tbody id="jobs"></tbody></table></div>
+        <div class="pane"><table><thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Destination</th><th>Error</th><th>Actions</th></tr></thead><tbody id="jobs"></tbody></table></div>
       </section>
       <section>
         <h2>Akwam Metadata</h2>
@@ -527,6 +588,35 @@ ADMIN_HTML = r"""<!doctype html>
         etaText ? `ETA ${etaText}` : ''
       ].filter(Boolean).map(text).join('<br>');
     }
+    function controls(job) {
+      const status = String(job.status || '');
+      const hasGid = Boolean(job.aria2_gid);
+      const canPause = hasGid && status === 'downloading';
+      const canResume = hasGid && status === 'paused';
+      const canDelete = !['completed', 'failed', 'deleted'].includes(status);
+      return `<div class="actions">
+        <button title="Pause download" aria-label="Pause download" ${canPause ? '' : 'disabled'} onclick="pauseJob(${job.id})">⏸</button>
+        <button title="Resume download" aria-label="Resume download" ${canResume ? '' : 'disabled'} onclick="resumeJob(${job.id})">▶</button>
+        <button class="danger" title="Delete download" aria-label="Delete download" ${canDelete ? '' : 'disabled'} onclick="deleteJob(${job.id})">✕</button>
+      </div>`;
+    }
+    async function command(path, method = 'POST') {
+      const response = await fetch(endpoint(path), { method });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return response.json();
+    }
+    async function pauseJob(id) {
+      await command(`/api/v3/monitor/jobs/${id}/pause`);
+      await refresh();
+    }
+    async function resumeJob(id) {
+      await command(`/api/v3/monitor/jobs/${id}/resume`);
+      await refresh();
+    }
+    async function deleteJob(id) {
+      await command(`/api/v3/monitor/jobs/${id}`, 'DELETE');
+      await refresh();
+    }
     async function refresh() {
       try {
         const jobs = await loadJson('/api/v3/monitor/jobs');
@@ -539,9 +629,10 @@ ADMIN_HTML = r"""<!doctype html>
             <td>${progress(job)}</td>
             <td><code>${text(job.dest_path || job.staging_path || '')}</code></td>
             <td class="error">${text(job.error || '')}</td>
+            <td>${controls(job)}</td>
           </tr>`).join('');
       } catch (error) {
-        document.querySelector('#jobs').innerHTML = `<tr><td colspan="6" class="error">${text(error.message)}</td></tr>`;
+        document.querySelector('#jobs').innerHTML = `<tr><td colspan="7" class="error">${text(error.message)}</td></tr>`;
       }
       try {
         const files = await loadJson('/api/v3/monitor/files');

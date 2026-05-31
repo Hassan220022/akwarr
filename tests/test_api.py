@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from akwarr.api import admin as admin_module
 from akwarr.api import queue as queue_module
 from akwarr.api import radarr, sonarr
 from akwarr.api.admin import _download_progress, _validate_akwam_url
@@ -91,24 +92,17 @@ async def test_sonarr_tag_endpoint_is_jellyseerr_compatible() -> None:
 
 @pytest.mark.asyncio
 async def test_tmdb_lookup_tv_resolves_tvdb_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"calls": []}
 
     class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
         def raise_for_status(self) -> None:
             return None
 
         def json(self):
-            return {
-                "tv_results": [
-                    {
-                        "id": 249826,
-                        "name": "Baba Almgal",
-                        "original_name": "بابا المجال",
-                        "first_air_date": "2023-03-23",
-                        "overview": "Arabic series",
-                    }
-                ]
-            }
+            return self.payload
 
     class FakeAsyncClient:
         def __init__(self, *, timeout):
@@ -121,9 +115,19 @@ async def test_tmdb_lookup_tv_resolves_tvdb_id(monkeypatch: pytest.MonkeyPatch) 
             return None
 
         async def get(self, url, *, params):
-            captured["url"] = url
-            captured["params"] = params
-            return FakeResponse()
+            captured["calls"].append((url, params))
+            if url.endswith("/find/431975"):
+                return FakeResponse({"tv_results": [{"id": 249826}]})
+            return FakeResponse(
+                {
+                    "id": 249826,
+                    "name": "Baba Almgal",
+                    "original_name": "بابا المجال",
+                    "first_air_date": "2023-03-23",
+                    "overview": "Arabic series",
+                    "external_ids": {"imdb_id": "tt32006014", "tvdb_id": 431975},
+                }
+            )
 
     monkeypatch.setenv("TMDB_API_KEY", "tmdb-key")
     get_settings.cache_clear()
@@ -131,10 +135,15 @@ async def test_tmdb_lookup_tv_resolves_tvdb_id(monkeypatch: pytest.MonkeyPatch) 
 
     results = await tmdb_module.TMDBClient(get_settings()).lookup_tv("tvdb:431975")
 
-    assert captured["url"].endswith("/find/431975")
-    assert captured["params"]["external_source"] == "tvdb_id"
+    first_url, first_params = captured["calls"][0]
+    second_url, second_params = captured["calls"][1]
+    assert first_url.endswith("/find/431975")
+    assert first_params["external_source"] == "tvdb_id"
+    assert second_url.endswith("/tv/249826")
+    assert second_params["append_to_response"] == "external_ids"
     assert results[0]["tmdbId"] == 249826
     assert results[0]["tvdbId"] == 431975
+    assert results[0]["imdbId"] == "tt32006014"
     assert results[0]["title"] == "Baba Almgal"
 
 
@@ -433,10 +442,11 @@ async def test_radarr_add_movie_uses_elcinema_arabic_candidates(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    captured: dict[str, list[str] | None] = {"alt_queries": None}
+    captured: dict[str, object] = {"alt_queries": None}
 
     class FakeStore:
         async def add_movie(self, data):
+            captured["movie"] = data
             return {"id": 1, "path": None, "added": None, **data}
 
     class FakeTMDBClient:
@@ -449,6 +459,7 @@ async def test_radarr_add_movie_uses_elcinema_arabic_candidates(
                 "original_title": "The Blue Elephant",
                 "year": 2014,
                 "overview": "",
+                "imdb_id": "tt3461252",
                 "poster_path": None,
                 "backdrop_path": None,
             }
@@ -472,8 +483,15 @@ async def test_radarr_add_movie_uses_elcinema_arabic_candidates(
         def __init__(self, settings):
             pass
 
-        async def arabic_candidates(self, *queries, year, kind):
-            return ["الفيل الأزرق"]
+        async def matched_candidates(self, *queries, year, kind):
+            return [
+                SimpleNamespace(
+                    title="الفيل الأزرق",
+                    url="https://elcinema.com/work/2019662",
+                    english_title="The Blue Elephant",
+                    year="2014",
+                )
+            ]
 
     monkeypatch.setenv("MOVIES_PATH", str(tmp_path / "movies"))
     get_settings.cache_clear()
@@ -492,6 +510,9 @@ async def test_radarr_add_movie_uses_elcinema_arabic_candidates(
     )
 
     assert captured["alt_queries"] == ["الفيل الأزرق", "The Blue Elephant"]
+    assert captured["movie"]["metadata"]["imdb_id"] == "tt3461252"
+    assert captured["movie"]["metadata"]["elcinema"]["id"] == "2019662"
+    assert captured["movie"]["metadata"]["elcinema"]["url"] == "https://elcinema.com/work/2019662"
 
 
 @pytest.mark.asyncio
@@ -499,10 +520,11 @@ async def test_sonarr_add_series_uses_elcinema_arabic_candidates(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    captured: dict[str, list[str] | None] = {"alt_queries": None}
+    captured: dict[str, object] = {"alt_queries": None}
 
     class FakeStore:
         async def add_series(self, data):
+            captured["series"] = data
             return {"id": 1, "path": None, "added": None, **data}
 
         async def list_episodes(self, series_id):
@@ -518,6 +540,7 @@ async def test_sonarr_add_series_uses_elcinema_arabic_candidates(
                 "original_title": "Paranormal",
                 "year": 2020,
                 "overview": "",
+                "imdb_id": "tt12411074",
                 "poster_path": None,
                 "backdrop_path": None,
             }
@@ -541,8 +564,15 @@ async def test_sonarr_add_series_uses_elcinema_arabic_candidates(
         def __init__(self, settings):
             pass
 
-        async def arabic_candidates(self, *queries, year, kind):
-            return ["ما وراء الطبيعة"]
+        async def matched_candidates(self, *queries, year, kind):
+            return [
+                SimpleNamespace(
+                    title="ما وراء الطبيعة",
+                    url="https://elcinema.com/work/2058052",
+                    english_title="Paranormal",
+                    year="2020",
+                )
+            ]
 
     monkeypatch.setenv("SERIES_PATH", str(tmp_path / "series"))
     get_settings.cache_clear()
@@ -561,6 +591,9 @@ async def test_sonarr_add_series_uses_elcinema_arabic_candidates(
     )
 
     assert captured["alt_queries"] == ["ما وراء الطبيعة", "Paranormal"]
+    assert captured["series"]["metadata"]["imdb_id"] == "tt12411074"
+    assert captured["series"]["metadata"]["elcinema"]["id"] == "2058052"
+    assert captured["series"]["metadata"]["elcinema"]["url"] == "https://elcinema.com/work/2058052"
 
 
 @pytest.mark.asyncio
@@ -669,3 +702,70 @@ async def test_monitor_files_reports_arabic_media_paths(
     data = r.json()
     assert data["movies"][0]["path"].endswith("فيلم 720p.mkv")
     assert data["series"][0]["path"].endswith("مسلسل - S01E01.mkv")
+
+
+@pytest.mark.asyncio
+async def test_monitor_job_controls_pause_resume_and_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    updates: list[tuple[int, dict]] = []
+
+    class FakeStore:
+        async def get_job(self, job_id):
+            return {"id": job_id, "status": "downloading", "aria2_gid": "gid-job"}
+
+        async def update_job(self, job_id, **kwargs):
+            updates.append((job_id, kwargs))
+
+    class FakeAria2:
+        def __init__(self, settings):
+            pass
+
+        async def pause(self, gid):
+            calls.append(("pause", gid))
+
+        async def unpause(self, gid):
+            calls.append(("unpause", gid))
+
+        async def force_remove(self, gid):
+            calls.append(("force_remove", gid))
+
+    monkeypatch.setenv("AKWARR_API_KEY", "secret")
+    get_settings.cache_clear()
+    monkeypatch.setattr(radarr, "store", FakeStore())
+    monkeypatch.setattr(admin_module, "Aria2Client", FakeAria2)
+
+    transport = ASGITransport(app=radarr_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        pause = await client.post("/api/v3/monitor/jobs/12/pause?apikey=secret")
+        resume = await client.post("/api/v3/monitor/jobs/12/resume?apikey=secret")
+        delete = await client.delete("/api/v3/monitor/jobs/12?apikey=secret")
+
+    assert pause.status_code == 200
+    assert pause.json()["status"] == "paused"
+    assert resume.status_code == 200
+    assert resume.json()["status"] == "downloading"
+    assert delete.status_code == 200
+    assert delete.json()["status"] == "deleted"
+    assert calls == [("pause", "gid-job"), ("unpause", "gid-job"), ("force_remove", "gid-job")]
+    assert updates == [
+        (12, {"status": JobStatus.PAUSED, "error": ""}),
+        (12, {"status": JobStatus.DOWNLOADING, "error": ""}),
+        (12, {"status": JobStatus.DELETED, "error": "deleted from monitor"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_monitor_ui_includes_download_control_buttons(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AKWARR_API_KEY", "secret")
+    get_settings.cache_clear()
+
+    transport = ASGITransport(app=radarr_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/ui?apikey=secret")
+
+    assert response.status_code == 200
+    assert "pauseJob" in response.text
+    assert "resumeJob" in response.text
+    assert "deleteJob" in response.text

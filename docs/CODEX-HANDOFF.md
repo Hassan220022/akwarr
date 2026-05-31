@@ -26,7 +26,7 @@ Jellyseerr  →  Akwarr (Radarr :7879 / Sonarr :8990)
 - English pipeline stays unchanged (torrents via Deluge, existing paths).
 - Arabic pipeline uses **HTTP downloads** (aria2), not torrents.
 - Jellyseerr discovery is **TMDB-only** — titles must exist on TMDB.
-- Metadata: TMDB + NFO sidecars + optional Akwam poster/fanart for Jellyfin.
+- Metadata: TMDB + IMDb + ElCinema IDs in NFO sidecars + optional Akwam poster/fanart for Jellyfin.
 
 ---
 
@@ -219,7 +219,9 @@ Creates:
 | Arabic Movies | movies  | `/cc/Movie/Arabic` |
 | Arabic Series | tvshows | `/cc/Serries/Arabic` |
 
-Recommended: metadata language **Arabic**, save artwork/metadata to media folders.
+Recommended: metadata language **Arabic**, local metadata/NFO reader **On**, save artwork/metadata to media folders.
+
+Akwarr writes `movie.nfo` and `tvshow.nfo` with `uniqueid` values for TMDB plus IMDb and ElCinema when the upstream lookups provide them. Jellyfin does not need an ElCinema plugin for this path; it reads the local NFO sidecar and keeps the ElCinema work URL/title as sidecar metadata.
 
 ---
 
@@ -396,6 +398,7 @@ Use it to check:
 - Akwam metadata, download links, and episode lists
 - direct link resolution failures
 - recent jobs, errors, active download percent, speed, and ETA
+- pause, resume, and delete/cancel controls for active downloads
 - imported files under `/media/Movie/Arabic` and `/media/Serries/Arabic`
 - Jellyseerr-facing download ETA through `/api/v3/queue` on the Radarr/Sonarr shims; include both `timeleft` and future `estimatedCompletionTime`
 

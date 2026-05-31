@@ -110,6 +110,9 @@ class MediaOrganizer:
         imdb_id: str | None,
         poster_url: str | None,
         fanart_url: str | None,
+        elcinema_id: str | None = None,
+        elcinema_url: str | None = None,
+        elcinema_title: str | None = None,
     ) -> Path:
         plan.folder.mkdir(parents=True, exist_ok=True, mode=self.settings.dir_mode)
         self._move_file(staging_file, plan.video)
@@ -120,6 +123,9 @@ class MediaOrganizer:
             year=year,
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
+            elcinema_id=elcinema_id,
+            elcinema_url=elcinema_url,
+            elcinema_title=elcinema_title,
             overview=overview,
             language=self.settings.metadata_language,
         )
@@ -145,6 +151,11 @@ class MediaOrganizer:
         episode_title: str,
         poster_url: str | None,
         fanart_url: str | None,
+        imdb_id: str | None = None,
+        tvdb_id: int | None = None,
+        elcinema_id: str | None = None,
+        elcinema_url: str | None = None,
+        elcinema_title: str | None = None,
     ) -> Path:
         series_folder.mkdir(parents=True, exist_ok=True, mode=self.settings.dir_mode)
         plan.folder.mkdir(parents=True, exist_ok=True, mode=self.settings.dir_mode)
@@ -156,6 +167,11 @@ class MediaOrganizer:
                 original_title=original_title,
                 year=year,
                 tmdb_id=tmdb_id,
+                imdb_id=imdb_id,
+                tvdb_id=tvdb_id,
+                elcinema_id=elcinema_id,
+                elcinema_url=elcinema_url,
+                elcinema_title=elcinema_title,
                 overview=overview,
                 language=self.settings.metadata_language,
             )

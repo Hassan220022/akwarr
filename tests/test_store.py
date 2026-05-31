@@ -80,3 +80,41 @@ async def _value(db: aiosqlite.Connection, query: str):
     cursor = await db.execute(query)
     row = await cursor.fetchone()
     return row[0]
+
+
+@pytest.mark.asyncio
+async def test_store_round_trips_external_metadata_for_import(tmp_path):
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    movie = await store.add_movie(
+        {
+            "tmdb_id": 2019662,
+            "title": "الفيل الأزرق",
+            "root_folder_path": str(tmp_path / "Movie" / "Arabic"),
+            "metadata": {
+                "imdb_id": "tt3461252",
+                "elcinema": {"id": "2019662", "url": "https://elcinema.com/work/2019662"},
+            },
+        }
+    )
+    series = await store.add_series(
+        {
+            "tmdb_id": 2058052,
+            "title": "ما وراء الطبيعة",
+            "root_folder_path": str(tmp_path / "Serries" / "Arabic"),
+            "metadata": {
+                "imdb_id": "tt12411074",
+                "elcinema": {"id": "2058052", "url": "https://elcinema.com/work/2058052"},
+            },
+        }
+    )
+
+    assert movie["metadata"]["imdb_id"] == "tt3461252"
+    assert movie["metadata"]["elcinema"]["url"] == "https://elcinema.com/work/2019662"
+    assert series["metadata"]["imdb_id"] == "tt12411074"
+    assert series["metadata"]["elcinema"]["url"] == "https://elcinema.com/work/2058052"

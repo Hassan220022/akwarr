@@ -128,3 +128,31 @@ async def test_aria2_remove_sends_gid(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert calls[0]["method"] == "aria2.remove"
     assert calls[0]["params"] == ["token:secret", "gid123"]
+
+
+@pytest.mark.asyncio
+async def test_aria2_pause_resume_and_force_remove_send_gid(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    response = httpx.Response(
+        200,
+        json={"id": "1", "jsonrpc": "2.0", "result": "OK"},
+        request=httpx.Request("POST", "http://aria2/jsonrpc"),
+    )
+
+    class CapturingAsyncClient(FakeAsyncClient):
+        async def post(self, url: str, json: dict):
+            calls.append(json)
+            return self.response
+
+    def client_factory(**kwargs):
+        return CapturingAsyncClient(response=response, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+
+    client = Aria2Client(Settings(aria2_rpc_url="http://aria2/jsonrpc", aria2_secret="secret"))
+    await client.pause("gid123")
+    await client.unpause("gid123")
+    await client.force_remove("gid123")
+
+    assert [call["method"] for call in calls] == ["aria2.pause", "aria2.unpause", "aria2.forceRemove"]
+    assert all(call["params"] == ["token:secret", "gid123"] for call in calls)

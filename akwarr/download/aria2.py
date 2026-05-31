@@ -56,6 +56,15 @@ class Aria2Client:
     async def remove(self, gid: str) -> None:
         await self._call("aria2.remove", gid)
 
+    async def force_remove(self, gid: str) -> None:
+        await self._call("aria2.forceRemove", gid)
+
+    async def pause(self, gid: str) -> None:
+        await self._call("aria2.pause", gid)
+
+    async def unpause(self, gid: str) -> None:
+        await self._call("aria2.unpause", gid)
+
     async def tell_status(self, gid: str) -> dict[str, Any]:
         result = await self._call(
             "aria2.tellStatus",

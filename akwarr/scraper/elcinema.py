@@ -75,6 +75,14 @@ class ElCinemaScraper:
         year: int | str | None,
         kind: str,
     ) -> list[str]:
+        return [result.title for result in await self.matched_candidates(*queries, year=year, kind=kind)]
+
+    async def matched_candidates(
+        self,
+        *queries: str | None,
+        year: int | str | None,
+        kind: str,
+    ) -> list[ElCinemaSearchResult]:
         all_results: list[ElCinemaSearchResult] = []
         for query in _unique_queries(*queries):
             all_results.extend(await self.search(query, kind=kind))
@@ -82,12 +90,14 @@ class ElCinemaScraper:
         target_year = str(year) if year else None
         all_results.sort(key=lambda item: 0 if target_year and item.year == target_year else 1)
 
-        candidates: list[str] = []
+        candidates: list[ElCinemaSearchResult] = []
+        seen: set[str] = set()
         for result in all_results:
             if "..." in result.title:
                 continue
-            if result.title not in candidates and RGX_ARABIC.search(result.title):
-                candidates.append(result.title)
+            if result.title not in seen and RGX_ARABIC.search(result.title):
+                candidates.append(result)
+                seen.add(result.title)
         return candidates
 
     def _parse_result(self, fragment: str) -> ElCinemaSearchResult | None:

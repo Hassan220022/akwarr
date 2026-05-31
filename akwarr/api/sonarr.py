@@ -203,12 +203,19 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
     original = body.originalTitle or tmdb_data.get("original_title")
     year = body.year or tmdb_data.get("year")
     overview = body.overview or tmdb_data.get("overview")
+    tvdb_id = body.tvdbId or tmdb_data.get("tvdb_id")
 
     base_queries = _unique_queries(title, original, tmdb_data.get("original_title"))
     arabic_queries: list[str] = []
+    elcinema_metadata: dict[str, str | None] | None = None
     if settings.elcinema_enable:
         try:
-            arabic_queries = await elcinema.arabic_candidates(*base_queries, year=year, kind="series")
+            arabic_queries, elcinema_metadata = await _elcinema_candidates(
+                elcinema,
+                *base_queries,
+                year=year,
+                kind="series",
+            )
         except Exception:
             logger.exception("ElCinema lookup failed for TMDB %s (%s)", tmdb_id, title)
     alt_queries = _unique_queries(*arabic_queries, *base_queries)
@@ -236,7 +243,7 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
     record = await s.add_series(
         {
             "tmdb_id": tmdb_id,
-            "tvdb_id": body.tvdbId,
+            "tvdb_id": tvdb_id,
             "title": title,
             "original_title": original,
             "year": year,
@@ -250,6 +257,7 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
             "quality_profile_id": body.qualityProfileId,
             "language_profile_id": body.languageProfileId,
             "root_folder_path": str(settings.series_path),
+            "metadata": _external_metadata(tmdb_data.get("imdb_id"), elcinema_metadata),
         }
     )
 
@@ -364,6 +372,52 @@ def _unique_queries(*values: Any) -> list[str]:
         if cleaned and cleaned not in queries:
             queries.append(cleaned)
     return queries
+
+
+async def _elcinema_candidates(
+    elcinema: Any,
+    *queries: str,
+    year: int | None,
+    kind: str,
+) -> tuple[list[str], dict[str, str | None] | None]:
+    if hasattr(elcinema, "matched_candidates"):
+        results = await elcinema.matched_candidates(*queries, year=year, kind=kind)
+        candidates = [result.title for result in results]
+        metadata = _elcinema_metadata(results[0]) if results else None
+        return candidates, metadata
+    return await elcinema.arabic_candidates(*queries, year=year, kind=kind), None
+
+
+def _elcinema_metadata(result: Any) -> dict[str, str | None]:
+    url = result.url
+    return {
+        "id": _elcinema_id_from_url(url),
+        "url": url,
+        "title": result.title,
+        "english_title": result.english_title,
+        "year": result.year,
+    }
+
+
+def _elcinema_id_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    parts = [part for part in url.split("?")[0].rstrip("/").split("/") if part]
+    if len(parts) >= 2 and parts[-2] == "work" and parts[-1].isdigit():
+        return parts[-1]
+    return None
+
+
+def _external_metadata(
+    imdb_id: str | None,
+    elcinema: dict[str, str | None] | None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if imdb_id:
+        metadata["imdb_id"] = imdb_id
+    if elcinema:
+        metadata["elcinema"] = elcinema
+    return metadata
 
 
 app.include_router(router)

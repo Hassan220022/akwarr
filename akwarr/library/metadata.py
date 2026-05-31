@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -29,6 +30,9 @@ def write_movie_nfo(
     year: int | None,
     tmdb_id: int,
     imdb_id: str | None = None,
+    elcinema_id: str | None = None,
+    elcinema_url: str | None = None,
+    elcinema_title: str | None = None,
     overview: str | None = None,
     language: str = "ar",
 ) -> None:
@@ -46,6 +50,7 @@ def write_movie_nfo(
     if imdb_id:
         imdb = ET.SubElement(root, "uniqueid", attrib={"type": "imdb"})
         imdb.text = imdb_id
+    _append_elcinema(root, elcinema_id=elcinema_id, elcinema_url=elcinema_url, elcinema_title=elcinema_title)
     _indent(root)
     tree = ET.ElementTree(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,6 +64,11 @@ def write_tvshow_nfo(
     original_title: str | None,
     year: int | None,
     tmdb_id: int,
+    imdb_id: str | None = None,
+    tvdb_id: int | None = None,
+    elcinema_id: str | None = None,
+    elcinema_url: str | None = None,
+    elcinema_title: str | None = None,
     overview: str | None = None,
     language: str = "ar",
 ) -> None:
@@ -73,6 +83,13 @@ def write_tvshow_nfo(
     ET.SubElement(root, "language").text = language
     uid = ET.SubElement(root, "uniqueid", attrib={"type": "tmdb", "default": "true"})
     uid.text = str(tmdb_id)
+    if imdb_id:
+        imdb = ET.SubElement(root, "uniqueid", attrib={"type": "imdb"})
+        imdb.text = imdb_id
+    if tvdb_id:
+        tvdb = ET.SubElement(root, "uniqueid", attrib={"type": "tvdb"})
+        tvdb.text = str(tvdb_id)
+    _append_elcinema(root, elcinema_id=elcinema_id, elcinema_url=elcinema_url, elcinema_title=elcinema_title)
     _indent(root)
     tree = ET.ElementTree(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,3 +132,29 @@ async def download_image(url: str, dest: Path) -> bool:
             return True
     except httpx.HTTPError:
         return False
+
+
+def _append_elcinema(
+    root: ET.Element,
+    *,
+    elcinema_id: str | None,
+    elcinema_url: str | None,
+    elcinema_title: str | None,
+) -> None:
+    identifier = elcinema_id or _elcinema_id_from_url(elcinema_url)
+    if identifier:
+        uid = ET.SubElement(root, "uniqueid", attrib={"type": "elcinema"})
+        uid.text = identifier
+    if elcinema_url:
+        ET.SubElement(root, "elcinemaurl").text = elcinema_url
+    if elcinema_title:
+        ET.SubElement(root, "elcinematitle").text = elcinema_title
+
+
+def _elcinema_id_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    parts = [part for part in urlparse(url).path.split("/") if part]
+    if len(parts) >= 2 and parts[0] == "work" and parts[1].isdigit():
+        return parts[1]
+    return None

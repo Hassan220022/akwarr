@@ -50,19 +50,26 @@ class TMDBClient:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(
                 f"{self.BASE}/tv/{tmdb_id}",
-                params={"api_key": self.api_key, "language": self.language},
+                params={
+                    "api_key": self.api_key,
+                    "language": self.language,
+                    "append_to_response": "external_ids",
+                },
             )
             r.raise_for_status()
             data = r.json()
             year = None
             if data.get("first_air_date"):
                 year = int(data["first_air_date"][:4])
+            external_ids = data.get("external_ids") or {}
             return {
                 "id": data["id"],
                 "title": data.get("name") or data.get("original_name"),
                 "original_title": data.get("original_name"),
                 "year": year,
                 "overview": data.get("overview"),
+                "imdb_id": external_ids.get("imdb_id"),
+                "tvdb_id": external_ids.get("tvdb_id"),
                 "poster_path": data.get("poster_path"),
                 "backdrop_path": data.get("backdrop_path"),
             }
@@ -118,8 +125,9 @@ class TMDBClient:
             if not results:
                 return None
             data = results[0]
-            data["tvdb_id"] = tvdb_id
-            return data
+        data = await self.tv(int(data["id"]))
+        data["tvdb_id"] = tvdb_id
+        return data
 
     def _movie_lookup_payload(self, data: dict[str, Any]) -> dict[str, Any]:
         year = data.get("year")
@@ -161,6 +169,7 @@ class TMDBClient:
             "monitored": True,
             "tmdbId": data.get("id"),
             "tvdbId": data.get("tvdb_id") or data.get("tvdbId") or 0,
+            "imdbId": data.get("imdb_id") or data.get("imdbId"),
             "images": [],
         }
 
