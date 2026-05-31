@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
@@ -45,36 +46,58 @@ def create_admin_router(get_store: Callable[[], Store]) -> APIRouter:
         settings = get_settings()
         jobs = await get_store().list_jobs(limit=limit)
         jobs = await _with_download_progress(jobs, Aria2Client(settings))
+        jobs = _tag_jobs(jobs, settings.mode)
+        peer_error = None
+        if settings.peer_monitor_url:
+            try:
+                jobs.extend(await _peer_monitor_jobs(settings.peer_monitor_url, settings.api_key, limit=limit))
+            except Exception as exc:
+                peer_error = str(exc)
+        jobs.sort(key=lambda job: str(job.get("created") or ""), reverse=True)
+        jobs = jobs[:limit]
         return {
             "total": len(jobs),
             "jobs": jobs,
             "counts": _job_counts(jobs),
+            "peerError": peer_error,
         }
 
-    @router.post("/api/v3/monitor/jobs/{job_id}/pause")
-    async def pause_job(job_id: int) -> dict[str, Any]:
+    @router.post("/api/v3/monitor/jobs/{job_ref}/pause")
+    async def pause_job(job_ref: str) -> dict[str, Any]:
+        settings = get_settings()
+        job_id = _local_job_id_or_proxy(job_ref, settings, "pause")
+        if job_id is None:
+            return await _proxy_peer_job_command(settings, job_ref, "pause", "POST")
         job = await _get_job_or_404(get_store(), job_id)
         gid = _job_gid_or_400(job)
-        await Aria2Client(get_settings()).pause(gid)
+        await Aria2Client(settings).pause(gid)
         await get_store().update_job(job_id, status=JobStatus.PAUSED, error="")
-        return {"id": job_id, "status": JobStatus.PAUSED}
+        return {"id": job_id, "controlId": _control_id(settings.mode, job_id), "status": JobStatus.PAUSED}
 
-    @router.post("/api/v3/monitor/jobs/{job_id}/resume")
-    async def resume_job(job_id: int) -> dict[str, Any]:
+    @router.post("/api/v3/monitor/jobs/{job_ref}/resume")
+    async def resume_job(job_ref: str) -> dict[str, Any]:
+        settings = get_settings()
+        job_id = _local_job_id_or_proxy(job_ref, settings, "resume")
+        if job_id is None:
+            return await _proxy_peer_job_command(settings, job_ref, "resume", "POST")
         job = await _get_job_or_404(get_store(), job_id)
         gid = _job_gid_or_400(job)
-        await Aria2Client(get_settings()).unpause(gid)
+        await Aria2Client(settings).unpause(gid)
         await get_store().update_job(job_id, status=JobStatus.DOWNLOADING, error="")
-        return {"id": job_id, "status": JobStatus.DOWNLOADING}
+        return {"id": job_id, "controlId": _control_id(settings.mode, job_id), "status": JobStatus.DOWNLOADING}
 
-    @router.delete("/api/v3/monitor/jobs/{job_id}")
-    async def delete_job(job_id: int) -> dict[str, Any]:
+    @router.delete("/api/v3/monitor/jobs/{job_ref}")
+    async def delete_job(job_ref: str) -> dict[str, Any]:
+        settings = get_settings()
+        job_id = _local_job_id_or_proxy(job_ref, settings, "delete")
+        if job_id is None:
+            return await _proxy_peer_job_command(settings, job_ref, "", "DELETE")
         job = await _get_job_or_404(get_store(), job_id)
         gid = str(job.get("aria2_gid") or "")
         if gid:
-            await Aria2Client(get_settings()).force_remove(gid)
+            await Aria2Client(settings).force_remove(gid)
         await get_store().update_job(job_id, status=JobStatus.DELETED, error="deleted from monitor")
-        return {"id": job_id, "status": JobStatus.DELETED}
+        return {"id": job_id, "controlId": _control_id(settings.mode, job_id), "status": JobStatus.DELETED}
 
     @router.get("/api/v3/akwam/search")
     async def akwam_search(
@@ -128,6 +151,63 @@ def create_admin_router(get_store: Callable[[], Store]) -> APIRouter:
         return {"directUrl": direct_url}
 
     return router
+
+
+def _tag_jobs(jobs: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+    tagged: list[dict[str, Any]] = []
+    for job in jobs:
+        item = dict(job)
+        item["source"] = source
+        item["controlId"] = _control_id(source, item["id"])
+        tagged.append(item)
+    return tagged
+
+
+def _control_id(source: str, job_id: int | str) -> str:
+    return f"{source}:{job_id}"
+
+
+async def _peer_monitor_jobs(peer_url: str, api_key: str, *, limit: int) -> list[dict[str, Any]]:
+    url = f"{peer_url.rstrip('/')}/api/v3/monitor/jobs"
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(url, params={"limit": limit}, headers={"X-Api-Key": api_key})
+        response.raise_for_status()
+    data = response.json()
+    jobs = data.get("jobs", []) if isinstance(data, dict) else []
+    return [dict(job) for job in jobs if isinstance(job, dict)]
+
+
+def _local_job_id_or_proxy(job_ref: str, settings: Any, action: str) -> int | None:
+    source, job_id = _split_job_ref(job_ref)
+    if source and source != settings.mode:
+        if not settings.peer_monitor_url:
+            raise HTTPException(status_code=404, detail=f"No peer monitor configured for {source} job {action}")
+        return None
+    return job_id
+
+
+def _split_job_ref(job_ref: str) -> tuple[str, int]:
+    if ":" in job_ref:
+        source, raw_id = job_ref.split(":", 1)
+    else:
+        source, raw_id = "", job_ref
+    try:
+        return source, int(raw_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid job id") from exc
+
+
+async def _proxy_peer_job_command(settings: Any, job_ref: str, action: str, method: str) -> dict[str, Any]:
+    source, job_id = _split_job_ref(job_ref)
+    suffix = f"/{action}" if action else ""
+    url = f"{settings.peer_monitor_url.rstrip('/')}/api/v3/monitor/jobs/{job_id}{suffix}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.request(method, url, headers={"X-Api-Key": settings.api_key})
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    data = response.json()
+    data["controlId"] = _control_id(source, job_id)
+    return data
 
 
 def _media_files(root: Path, *, limit: int) -> list[dict[str, Any]]:
@@ -824,20 +904,21 @@ ADMIN_HTML = r"""<!doctype html>
     function controls(job) {
       const status = String(job.status || '');
       const hasGid = Boolean(job.aria2_gid);
+      const controlId = text(job.controlId || job.id);
       const canPause = hasGid && status === 'downloading';
       const canResume = hasGid && status === 'paused';
       const canDelete = !['completed', 'failed', 'deleted'].includes(status);
       return `<div class="actions">
-        <button title="Pause download" aria-label="Pause download" ${canPause ? '' : 'disabled'} onclick="pauseJob(${job.id})">Pause</button>
-        <button title="Resume download" aria-label="Resume download" ${canResume ? '' : 'disabled'} onclick="resumeJob(${job.id})">Run</button>
-        <button class="danger" title="Delete download" aria-label="Delete download" ${canDelete ? '' : 'disabled'} onclick="deleteJob(${job.id})">Delete</button>
+        <button title="Pause download" aria-label="Pause download" ${canPause ? '' : 'disabled'} onclick="pauseJob('${controlId}')">Pause</button>
+        <button title="Resume download" aria-label="Resume download" ${canResume ? '' : 'disabled'} onclick="resumeJob('${controlId}')">Run</button>
+        <button class="danger" title="Delete download" aria-label="Delete download" ${canDelete ? '' : 'disabled'} onclick="deleteJob('${controlId}')">Delete</button>
       </div>`;
     }
     function jobRow(job) {
       return `
         <tr>
-          <td>${job.id}</td>
-          <td>${text(job.kind)}</td>
+          <td>${text(job.controlId || job.id)}</td>
+          <td>${text(job.source ? `${job.kind} / ${job.source}` : job.kind)}</td>
           <td><span class="tag ${text(job.status)}">${text(job.status)}</span></td>
           <td>${progress(job)}</td>
           <td><code class="mono-path">${text(job.dest_path || job.staging_path || '')}</code></td>
@@ -849,7 +930,7 @@ ADMIN_HTML = r"""<!doctype html>
       const path = job.dest_path || job.staging_path || '';
       return `<div class="job-card">
         <div class="job-card-head">
-          <strong>#${job.id} ${text(job.kind)}</strong>
+          <strong>#${text(job.controlId || job.id)} ${text(job.source ? `${job.kind} / ${job.source}` : job.kind)}</strong>
           <span class="tag ${text(job.status)}">${text(job.status)}</span>
         </div>
         <div class="meta">${progress(job) || 'No active progress'}</div>

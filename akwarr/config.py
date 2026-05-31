@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         default="http://akwarr-aria2:6800/jsonrpc", alias="ARIA2_RPC_URL"
     )
     aria2_secret: str = Field(default="P3TERX", alias="ARIA2_SECRET")
+    peer_monitor_url: str = Field(default="", alias="PEER_MONITOR_URL")
     preferred_qualities: str = Field(default="720p,1080p,480p", alias="PREFERRED_QUALITIES")
 
     movies_path: Path = Field(default=Path("/media/Movie/Arabic"), alias="MOVIES_PATH")

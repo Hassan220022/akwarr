@@ -23,6 +23,7 @@ def clear_settings_cache(monkeypatch: pytest.MonkeyPatch):
         "JELLYFIN_API_KEY",
         "JELLYFIN_URL",
         "JELLYSEERR_API_KEY",
+        "PEER_MONITOR_URL",
     ):
         monkeypatch.delenv(name, raising=False)
     get_settings.cache_clear()
@@ -971,6 +972,77 @@ async def test_monitor_job_controls_pause_resume_and_delete(
         (12, {"status": JobStatus.DOWNLOADING, "error": ""}),
         (12, {"status": JobStatus.DELETED, "error": "deleted from monitor"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_monitor_jobs_aggregates_peer_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeStore:
+        async def list_jobs(self, limit=100):
+            return [
+                {
+                    "id": 1,
+                    "kind": "movie",
+                    "status": "completed",
+                    "created": "2026-05-31T01:00:00+00:00",
+                }
+            ]
+
+    class FakeAria2:
+        def __init__(self, settings):
+            pass
+
+        async def tell_status(self, gid):
+            return {}
+
+    class FakePeerResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "jobs": [
+                    {
+                        "id": 7,
+                        "controlId": "sonarr:7",
+                        "source": "sonarr",
+                        "kind": "episode",
+                        "status": "downloading",
+                        "created": "2026-05-31T02:00:00+00:00",
+                    }
+                ]
+            }
+
+    class FakeHttpClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, params=None, headers=None):
+            assert url == "http://akwarr-sonarr:8990/api/v3/monitor/jobs"
+            assert headers == {"X-Api-Key": "secret"}
+            return FakePeerResponse()
+
+    monkeypatch.setenv("AKWARR_API_KEY", "secret")
+    monkeypatch.setenv("PEER_MONITOR_URL", "http://akwarr-sonarr:8990")
+    get_settings.cache_clear()
+    monkeypatch.setattr(radarr, "store", FakeStore())
+    monkeypatch.setattr(admin_module, "Aria2Client", FakeAria2)
+    monkeypatch.setattr(admin_module.httpx, "AsyncClient", FakeHttpClient)
+
+    transport = ASGITransport(app=radarr_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v3/monitor/jobs?apikey=secret")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["counts"] == {"downloading": 1, "completed": 1}
+    assert [job["controlId"] for job in data["jobs"]] == ["sonarr:7", "radarr:1"]
+    assert data["peerError"] is None
 
 
 @pytest.mark.asyncio

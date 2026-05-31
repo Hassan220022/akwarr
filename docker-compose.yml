@@ -11,6 +11,7 @@ services:
       FLARESOLVERR_URL: http://akwarr-flaresolverr:8191/v1
       ARIA2_RPC_URL: http://akwarr-aria2:6800/jsonrpc
       ARIA2_SECRET: ${ARIA2_SECRET:-P3TERX}
+      PEER_MONITOR_URL: http://akwarr-sonarr:8990
       MOVIES_PATH: /media/Movie/Arabic
       STAGING_PATH: /media/Download/akwarr-staging
       DATA_PATH: /config/radarr
