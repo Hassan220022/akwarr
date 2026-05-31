@@ -1,0 +1,171 @@
+# Akwarr
+
+**Akwarr** is a Radarr/Sonarr API shim for [Jellyseerr](https://github.com/Fallenbagel/jellyseerr). It downloads Arabic movies and series from [Akwam](https://akwam.it), organizes files for [Jellyfin](https://jellyfin.org), and reports availability back to Jellyseerr — without touching your English Radarr/Sonarr/Deluge stack.
+
+```
+Jellyseerr  →  Akwarr (Radarr/Sonarr API)  →  Akwam + FlareSolverr + aria2
+                    ↑
+              ElCinema Arabic title bridge
+                    ↓
+              /media/Movie/Arabic and /media/Serries/Arabic
+                    ↓
+              Jellyfin (shared ZFS library)
+```
+
+## Features
+
+- **Jellyseerr-native requests** — add Akwarr as extra Radarr/Sonarr servers; users pick Arabic in Advanced Requests
+- **TMDB-first metadata** — NFO files with TMDB IDs so Jellyfin matches titles and artwork
+- **ElCinema Arabic title bridge** — converts Jellyseerr/TMDB English titles into Arabic search candidates before Akwam lookup
+- **Akwam artwork fallback** — saves `poster.jpg` / `fanart.jpg` from Akwam when useful
+- **Jellyfin-friendly layout** — standard movie folders and `Season XX/SxxExx` episode naming
+- **HTTP downloads via aria2** — Akwam direct links (not torrents; Deluge stays English-only)
+- **Cloudflare bypass** — FlareSolverr integration with session reuse
+
+## Quick start (Docker)
+
+```bash
+git clone https://github.com/Hassan220022/akwarr.git
+cd akwarr
+cp .env.example .env
+# Edit .env: AKWARR_API_KEY, TMDB_API_KEY, JELLYFIN_API_KEY
+
+docker compose up -d --build
+```
+
+| Service               | Port       | Role              |
+| --------------------- | ---------- | ----------------- |
+| `akwarr-radarr`       | 7879       | Movies API shim   |
+| `akwarr-sonarr`       | 8990       | Series API shim   |
+| `akwarr-flaresolverr` | 8192       | Cloudflare bypass |
+| `akwarr-aria2`        | 6800 (RPC) | Download queue    |
+
+## Storage layout
+
+On CT107 (Docker): `/media/Movie/Arabic` and `/media/Serries/Arabic`
+On CT113 (Jellyfin): `/cc/Movie/Arabic` and `/cc/Serries/Arabic` (same ZFS pool)
+
+```
+/media/Movie/Arabic/
+└── الست (2026)/
+    ├── الست (2026) 720p.mkv
+    ├── movie.nfo
+    ├── poster.jpg
+    └── fanart.jpg
+
+/media/Serries/Arabic/
+└── اللعبة (2025)/
+    ├── tvshow.nfo
+    ├── poster.jpg
+    └── Season 01/
+        └── اللعبة - S01E01 720p.mkv
+
+/media/Download/akwarr-staging/   # aria2 incomplete downloads
+```
+
+## Jellyseerr setup
+
+1. **Settings → Services → Radarr** — add server:
+   - Host: `http://akwarr-radarr:7879` (or your LAN IP)
+   - API Key: same as `AKWARR_API_KEY`
+   - Default: **No**
+
+2. **Settings → Services → Sonarr** — add server:
+   - Host: `http://akwarr-sonarr:8990`
+   - API Key: same as `AKWARR_API_KEY`
+   - Default: **No**
+
+3. Enable **Advanced Requests** so users can pick Arabic servers in the request modal.
+
+4. Optional **Override Rule**: if `original_language` is `ar` → route to Arabic Radarr/Sonarr.
+
+## Admin monitor
+
+Akwarr exposes an API-key protected monitor on both shim containers:
+
+- Radarr mode: `http://<host>:7879/ui?apikey=<AKWARR_API_KEY>`
+- Sonarr mode: `http://<host>:8990/ui?apikey=<AKWARR_API_KEY>`
+- LAN-only homelab URL: `https://akwam.mikawi.org/ui`
+
+The monitor shows ElCinema Arabic title candidates, Akwam search results, metadata/download links, recent jobs, failed errors, active download percent/speed/ETA, and imported files under `/media/Movie/Arabic` and `/media/Serries/Arabic`.
+
+The Akwarr API is also available on the same LAN-only host without a query API key, for example `https://akwam.mikawi.org/api/v3/system/status`. The LAN proxy injects `X-Api-Key`; direct container access still requires the normal key.
+
+## Jellyseerr download ETA
+
+Jellyseerr's webhook notification system is outbound-only. Download progress is exposed through the normal Radarr/Sonarr queue contract instead:
+
+- Movies: `GET /api/v3/queue` on the Akwarr Radarr shim.
+- Series episodes: `GET /api/v3/queue` on the Akwarr Sonarr shim.
+
+Active Akwarr jobs include `status`, `size`, `sizeleft`, `timeleft`, `estimatedCompletionTime`, `downloadClient=aria2`, and movie/series/episode identifiers so Jellyseerr can see how many minutes remain while aria2 is downloading.
+
+## Jellyfin setup (CT113)
+
+Create two libraries:
+
+| Library       | Path                |
+| ------------- | ------------------- |
+| Arabic Movies | `/cc/Movie/Arabic` |
+| Arabic Series | `/cc/Serries/Arabic` |
+
+Recommended library settings:
+
+- Metadata language: **Arabic**
+- Save artwork into media folders: **On**
+- Save metadata into media folders: **On**
+
+## Homelab integration (CT107)
+
+See [docs/CODEX-HANDOFF.md](docs/CODEX-HANDOFF.md) for full homelab context, deploy scripts, and verification when continuing in Codex.
+
+If you already run FlareSolverr in your media stack:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.media-stack.yml up -d
+```
+
+This reuses `flaresolverr:8191` and mounts `/media:/media` on the host.
+
+## Development
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+ruff check akwarr tests
+```
+
+Run locally:
+
+```bash
+MODE=radarr DATA_PATH=./data/radarr akwarr-radarr
+MODE=sonarr DATA_PATH=./data/sonarr akwarr-sonarr
+```
+
+## Environment variables
+
+See [`.env.example`](.env.example) for the full list. Key values:
+
+| Variable                            | Description                          |
+| ----------------------------------- | ------------------------------------ |
+| `AKWARR_API_KEY`                    | Jellyseerr X-Api-Key                 |
+| `TMDB_API_KEY`                      | TMDB metadata for titles + NFO       |
+| `ELCINEMA_ENABLE` / `ELCINEMA_BASE` | Arabic title bridge for Akwam search |
+| `ARIA2_SECRET`                      | aria2 JSON-RPC token, default `P3TERX` |
+| `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Trigger library refresh after import |
+| `MOVIES_PATH` / `SERIES_PATH`       | Final media destinations             |
+| `STAGING_PATH`                      | Temporary aria2 download area        |
+
+## Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module map and request flow.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Disclaimer
+
+For personal homelab use. Respect copyright laws in your jurisdiction. Akwarr automates access to third-party sources; you are responsible for how you use it.

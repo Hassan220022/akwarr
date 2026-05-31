@@ -1,0 +1,97 @@
+services:
+  akwarr-radarr:
+    build: .
+    container_name: akwarr-radarr
+    restart: unless-stopped
+    command: ["akwarr-radarr"]
+    environment:
+      MODE: radarr
+      AKWARR_API_KEY: ${AKWARR_API_KEY}
+      AKWAM_BASE: https://akwam.it
+      FLARESOLVERR_URL: http://akwarr-flaresolverr:8191/v1
+      ARIA2_RPC_URL: http://akwarr-aria2:6800/jsonrpc
+      ARIA2_SECRET: ${ARIA2_SECRET:-P3TERX}
+      MOVIES_PATH: /media/Movie/Arabic
+      STAGING_PATH: /media/Download/akwarr-staging
+      DATA_PATH: /config/radarr
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      JELLYFIN_URL: ${JELLYFIN_URL:-http://192.168.1.20:8096}
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
+      METADATA_LANGUAGE: ar
+      SAVE_AKWAM_ARTWORK: "true"
+    volumes:
+      - ${MEDIA_ROOT:-./data/media}:/media
+      - akwarr-radarr-config:/config/radarr
+    ports:
+      - "7879:7879"
+    networks:
+      - akwarr
+    depends_on:
+      - akwarr-flaresolverr
+      - akwarr-aria2
+
+  akwarr-sonarr:
+    build: .
+    container_name: akwarr-sonarr
+    restart: unless-stopped
+    command: ["akwarr-sonarr"]
+    environment:
+      MODE: sonarr
+      AKWARR_API_KEY: ${AKWARR_API_KEY}
+      AKWAM_BASE: https://akwam.it
+      FLARESOLVERR_URL: http://akwarr-flaresolverr:8191/v1
+      ARIA2_RPC_URL: http://akwarr-aria2:6800/jsonrpc
+      ARIA2_SECRET: ${ARIA2_SECRET:-P3TERX}
+      SERIES_PATH: /media/Serries/Arabic
+      STAGING_PATH: /media/Download/akwarr-staging
+      DATA_PATH: /config/sonarr
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      JELLYFIN_URL: ${JELLYFIN_URL:-http://192.168.1.20:8096}
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
+      METADATA_LANGUAGE: ar
+      SAVE_AKWAM_ARTWORK: "true"
+    volumes:
+      - ${MEDIA_ROOT:-./data/media}:/media
+      - akwarr-sonarr-config:/config/sonarr
+    ports:
+      - "8990:8990"
+    networks:
+      - akwarr
+    depends_on:
+      - akwarr-flaresolverr
+      - akwarr-aria2
+
+  akwarr-flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: akwarr-flaresolverr
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+    ports:
+      - "8192:8191"
+    networks:
+      - akwarr
+
+  akwarr-aria2:
+    image: p3terx/aria2-pro:latest
+    container_name: akwarr-aria2
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      PGID: 1000
+      RPC_SECRET: ${ARIA2_SECRET:-P3TERX}
+      RPC_PORT: 6800
+    volumes:
+      - ${MEDIA_ROOT:-./data/media}:/media
+      - akwarr-aria2-config:/config
+    networks:
+      - akwarr
+
+networks:
+  akwarr:
+    name: akwarr
+
+volumes:
+  akwarr-radarr-config:
+  akwarr-sonarr-config:
+  akwarr-aria2-config:

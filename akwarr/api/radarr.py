@@ -1,0 +1,281 @@
+"""Radarr-compatible API for Jellyseerr."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from typing import Any
+
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+
+from akwarr.api.admin import create_admin_router
+from akwarr.api.auth import verify_api_key
+from akwarr.api.queue import queue_payload
+from akwarr.config import get_settings
+from akwarr.core.store import Store
+from akwarr.core.tmdb import TMDBClient
+from akwarr.core.worker import DownloadWorker
+from akwarr.download.aria2 import Aria2Client
+from akwarr.library.organizer import MediaOrganizer
+from akwarr.scraper.akwam import AkwamScraper
+from akwarr.scraper.elcinema import ElCinemaScraper
+
+logger = logging.getLogger(__name__)
+
+store: Store | None = None
+worker: DownloadWorker | None = None
+worker_task: asyncio.Task | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global store, worker, worker_task
+    settings = get_settings()
+    settings.data_path.mkdir(parents=True, exist_ok=True)
+    store = Store(
+        settings.db_path,
+        movies_path=settings.movies_path,
+        series_path=settings.series_path,
+        staging_path=settings.staging_path,
+    )
+    await store.init()
+    worker = DownloadWorker(settings, store)
+    worker_task = asyncio.create_task(worker.run_forever())
+    yield
+    if worker:
+        worker.stop()
+    if worker_task:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="Akwarr Radarr", version="0.1.0", lifespan=lifespan)
+router = APIRouter(prefix="/api/v3", dependencies=[Depends(verify_api_key)])
+
+
+class MovieAddBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    title: str
+    tmdbId: int = Field(validation_alias=AliasChoices("tmdbId", "tmdbid"))
+    qualityProfileId: int = Field(default=1, validation_alias=AliasChoices("qualityProfileId", "profileId"))
+    rootFolderPath: str = ""
+    monitored: bool = True
+    addOptions: dict[str, Any] = Field(default_factory=dict)
+    year: int | None = None
+    originalTitle: str | None = None
+    overview: str | None = None
+
+
+class CommandBody(BaseModel):
+    name: str
+    movieIds: list[int] = Field(default_factory=list)
+
+
+def _get_store() -> Store:
+    if store is None:
+        raise HTTPException(503, "Store not ready")
+    return store
+
+
+@router.get("/system/status")
+async def system_status() -> dict[str, Any]:
+    return {
+        "appName": "Akwarr Radarr",
+        "instanceName": "Akwarr Radarr",
+        "version": "3.0.0.0",
+        "isProduction": True,
+        "isAdmin": True,
+        "isDebug": False,
+        "startupPath": "/app",
+        "appData": "/config",
+        "osName": "linux",
+        "osVersion": "docker",
+        "branch": "main",
+        "authentication": "apiKey",
+    }
+
+
+@router.get("/qualityProfile")
+@router.get("/qualityprofile")
+async def quality_profiles() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": 1,
+            "name": "Arabic 720p",
+            "upgradeAllowed": False,
+            "cutoff": 1,
+            "items": [{"quality": {"id": 1, "name": "720p"}, "allowed": True}],
+        }
+    ]
+
+
+@router.get("/tag")
+async def tags() -> list[dict[str, Any]]:
+    return []
+
+
+@router.get("/rootfolder")
+async def root_folders() -> list[dict[str, Any]]:
+    settings = get_settings()
+    path = str(settings.movies_path)
+    return [
+        {
+            "id": 1,
+            "path": path,
+            "accessible": settings.movies_path.exists(),
+            "freeSpace": 0,
+            "unmappedFolders": [],
+        }
+    ]
+
+
+@router.get("/movie/lookup")
+async def movie_lookup(term: str = Query(...)) -> list[dict[str, Any]]:
+    tmdb = TMDBClient(get_settings())
+    return await tmdb.lookup_movie(term)
+
+
+@router.get("/movie")
+async def list_movies() -> list[dict[str, Any]]:
+    movies = await _get_store().list_movies()
+    return [_movie_payload(m) for m in movies]
+
+
+@router.get("/movie/{movie_id}")
+async def get_movie(movie_id: int) -> dict[str, Any]:
+    movie = await _get_store().get_movie(movie_id)
+    if not movie:
+        raise HTTPException(404, "Movie not found")
+    return _movie_payload(movie)
+
+
+@router.post("/movie")
+async def add_movie(body: MovieAddBody) -> dict[str, Any]:
+    settings = get_settings()
+    s = _get_store()
+    tmdb = TMDBClient(settings)
+    scraper = AkwamScraper(settings)
+    elcinema = ElCinemaScraper(settings)
+
+    tmdb_data = await tmdb.movie(body.tmdbId)
+    title = body.title or tmdb_data.get("title") or f"TMDB {body.tmdbId}"
+    original = body.originalTitle or tmdb_data.get("original_title")
+    year = body.year or tmdb_data.get("year")
+    overview = body.overview or tmdb_data.get("overview")
+
+    base_queries = _unique_queries(title, original, tmdb_data.get("original_title"))
+    arabic_queries: list[str] = []
+    if settings.elcinema_enable:
+        try:
+            arabic_queries = await elcinema.arabic_candidates(*base_queries, year=year, kind="movie")
+        except Exception:
+            logger.exception("ElCinema lookup failed for TMDB %s (%s)", body.tmdbId, title)
+    alt_queries = _unique_queries(*arabic_queries, *base_queries)
+    match = await scraper.best_match(title, section="movie", alt_queries=alt_queries)
+
+    poster = TMDBClient.poster_url(tmdb_data.get("poster_path"))
+    fanart = TMDBClient.poster_url(tmdb_data.get("backdrop_path"))
+    akwam_url = match.url if match else None
+    if match and match.poster:
+        poster = match.poster
+
+    if match:
+        try:
+            meta = await scraper.fetch_metadata(match.url, kind="movie")
+            if meta.poster:
+                poster = meta.poster
+            if meta.fanart:
+                fanart = meta.fanart
+            if meta.overview and not overview:
+                overview = meta.overview
+        except Exception:
+            logger.exception("Akwam metadata fetch failed for %s", match.url)
+
+    record = await s.add_movie(
+        {
+            "tmdb_id": body.tmdbId,
+            "title": title,
+            "original_title": original,
+            "year": year,
+            "overview": overview,
+            "poster_url": poster,
+            "fanart_url": fanart,
+            "akwam_url": akwam_url,
+            "has_file": False,
+            "monitored": body.monitored,
+            "quality_profile_id": body.qualityProfileId,
+            "root_folder_path": str(settings.movies_path),
+        }
+    )
+
+    if akwam_url and body.addOptions.get("searchForMovie", True):
+        plan = MediaOrganizer(settings).movie_plan(title=title, year=year, quality="720p")
+        job_id = await s.create_job("movie", record["id"], str(plan.video))
+        logger.info("Queued movie job %s for TMDB %s", job_id, body.tmdbId)
+    elif not akwam_url:
+        logger.warning("No Akwam match for TMDB %s (%s)", body.tmdbId, title)
+
+    return _movie_payload(record)
+
+
+@router.post("/command")
+async def run_command(body: CommandBody) -> dict[str, Any]:
+    return {"name": body.name, "status": "queued"}
+
+
+@router.get("/queue")
+async def get_queue(
+    page: int = Query(default=1),
+    pageSize: int = Query(default=20),
+    sortKey: str = Query(default="timeleft"),
+    sortDirection: str = Query(default="ascending"),
+) -> dict[str, Any]:
+    return await queue_payload(
+        _get_store(),
+        Aria2Client(get_settings()),
+        kind="movie",
+        page=page,
+        page_size=pageSize,
+        sort_key=sortKey,
+        sort_direction=sortDirection,
+    )
+
+
+def _movie_payload(movie: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": movie["id"],
+        "title": movie["title"],
+        "originalTitle": movie.get("original_title") or movie["title"],
+        "sortTitle": movie["title"],
+        "status": "released",
+        "overview": movie.get("overview") or "",
+        "year": movie.get("year"),
+        "hasFile": movie.get("has_file", False),
+        "monitored": movie.get("monitored", True),
+        "tmdbId": movie["tmdb_id"],
+        "qualityProfileId": movie.get("quality_profile_id", 1),
+        "rootFolderPath": movie.get("root_folder_path"),
+        "path": movie.get("path"),
+        "added": movie.get("added"),
+        "isAvailable": movie.get("has_file", False),
+        "movieFile": {"path": movie["path"]} if movie.get("path") else None,
+    }
+
+
+def _unique_queries(*values: Any) -> list[str]:
+    queries: list[str] = []
+    for value in values:
+        cleaned = str(value or "").strip()
+        if cleaned and cleaned not in queries:
+            queries.append(cleaned)
+    return queries
+
+
+app.include_router(router)
+app.include_router(create_admin_router(_get_store))

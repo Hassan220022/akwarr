@@ -1,0 +1,229 @@
+"""Background download and import worker."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from akwarr.config import Settings
+from akwarr.core.store import JobStatus, Store
+from akwarr.download.aria2 import Aria2Client
+from akwarr.library.organizer import MediaOrganizer
+from akwarr.scraper.akwam import AkwamScraper
+
+logger = logging.getLogger(__name__)
+
+
+class DownloadWorker:
+    def __init__(self, settings: Settings, store: Store) -> None:
+        self.settings = settings
+        self.store = store
+        self.scraper = AkwamScraper(settings)
+        self.aria2 = Aria2Client(settings)
+        self.organizer = MediaOrganizer(settings)
+        self._running = False
+
+    async def run_forever(self) -> None:
+        self._running = True
+        self.organizer.ensure_roots()
+        while self._running:
+            try:
+                await self._process_jobs()
+            except Exception:
+                logger.exception("Worker loop error")
+            await asyncio.sleep(self.settings.worker_poll_seconds)
+
+    def stop(self) -> None:
+        self._running = False
+
+    async def _process_jobs(self) -> None:
+        jobs = await self.store.list_pending_jobs()
+        for job in jobs:
+            status = job["status"]
+            if status == JobStatus.PENDING:
+                await self._start_job(job)
+            elif status == JobStatus.DOWNLOADING:
+                await self._check_download(job)
+            elif status == JobStatus.IMPORTING:
+                await self._import_job(job)
+
+    async def _start_job(self, job: dict) -> None:
+        job_id = job["id"]
+        kind = job["kind"]
+        ref_id = job["ref_id"]
+
+        try:
+            if kind == "movie":
+                movie = await self.store.get_movie(ref_id)
+                if not movie:
+                    await self.store.update_job(job_id, status=JobStatus.FAILED, error="movie not found")
+                    return
+                if not movie.get("akwam_url"):
+                    await self.store.update_job(job_id, status=JobStatus.FAILED, error="no akwam url")
+                    return
+                meta = await self.scraper.fetch_metadata(movie["akwam_url"], kind="movie")
+                quality, link = await self.scraper.pick_download(meta)
+                direct = await self.scraper.resolve_direct_url(link)
+                staging = self.organizer.staging_dir()
+                ext = MediaOrganizer.extension_from_url(direct)
+                filename = Aria2Client.safe_filename(f"movie-{movie['tmdb_id']}{ext}")
+                gid = await self.aria2.add_uri(direct, str(staging), filename)
+                await self.store.update_job(
+                    job_id,
+                    status=JobStatus.DOWNLOADING,
+                    aria2_gid=gid,
+                    staging_path=str(staging / filename),
+                    error="",
+                )
+            elif kind == "episode":
+                episode = await self.store.get_episode(ref_id)
+                if not episode or not episode.get("akwam_url"):
+                    await self.store.update_job(job_id, status=JobStatus.FAILED, error="episode not found")
+                    return
+                quality, direct = await self.scraper.episode_download_url(episode["akwam_url"])
+                staging = self.organizer.staging_dir()
+                ext = MediaOrganizer.extension_from_url(direct)
+                filename = Aria2Client.safe_filename(
+                    f"s{episode['season_number']}e{episode['episode_number']}{ext}"
+                )
+                gid = await self.aria2.add_uri(direct, str(staging), filename)
+                await self.store.update_job(
+                    job_id,
+                    status=JobStatus.DOWNLOADING,
+                    aria2_gid=gid,
+                    staging_path=str(staging / filename),
+                    error="",
+                )
+            else:
+                await self.store.update_job(job_id, status=JobStatus.FAILED, error=f"unknown kind {kind}")
+        except Exception as exc:
+            logger.exception("Failed to start job %s", job_id)
+            await self.store.update_job(job_id, status=JobStatus.FAILED, error=str(exc))
+
+    async def _check_download(self, job: dict) -> None:
+        gid = job.get("aria2_gid")
+        if not gid:
+            await self.store.update_job(job["id"], status=JobStatus.FAILED, error="missing gid")
+            return
+        try:
+            status = await self.aria2.tell_status(gid)
+            state = status.get("status")
+            actual_path = self._aria2_file_path(status)
+            staging_path = str(job.get("staging_path") or "")
+            if actual_path and self._is_legacy_staging_path(actual_path):
+                await self.aria2.remove(gid)
+                await self.store.update_job(
+                    job["id"],
+                    status=JobStatus.PENDING,
+                    staging_path=str(self._legacy_requeue_path(job, actual_path)),
+                    error="requeued legacy staging download",
+                )
+                return
+            if actual_path and actual_path != staging_path:
+                await self.store.update_job(job["id"], staging_path=actual_path)
+            if state == "complete":
+                await self.store.update_job(job["id"], status=JobStatus.IMPORTING, staging_path=actual_path or None)
+            elif state == "error":
+                await self.store.update_job(
+                    job["id"],
+                    status=JobStatus.FAILED,
+                    error=status.get("errorMessage", "aria2 error"),
+                )
+        except Exception as exc:
+            await self.store.update_job(job["id"], status=JobStatus.FAILED, error=str(exc))
+
+    @staticmethod
+    def _aria2_file_path(status: dict) -> str | None:
+        files = status.get("files") or []
+        if not files:
+            return None
+        path = files[0].get("path")
+        return str(path) if path else None
+
+    @staticmethod
+    def _is_legacy_staging_path(path: str) -> bool:
+        return path.startswith("/media/arabic/.staging/")
+
+    def _legacy_requeue_path(self, job: dict, path: str) -> Path:
+        filename = Path(path).name or "download.mkv"
+        return self.settings.staging_path / "requeued" / f"job-{job['id']}" / filename
+
+    async def _import_job(self, job: dict) -> None:
+        staging_path = job.get("staging_path")
+        if not staging_path or not Path(staging_path).exists():
+            await self.store.update_job(job["id"], status=JobStatus.FAILED, error="staging file missing")
+            return
+
+        try:
+            if job["kind"] == "movie":
+                await self._import_movie(job, Path(staging_path))
+            elif job["kind"] == "episode":
+                await self._import_episode(job, Path(staging_path))
+            await self.store.update_job(job["id"], status=JobStatus.COMPLETED)
+        except Exception as exc:
+            logger.exception("Import failed for job %s", job["id"])
+            await self.store.update_job(job["id"], status=JobStatus.FAILED, error=str(exc))
+
+    async def _import_movie(self, job: dict, staging_file: Path) -> None:
+        movie = await self.store.get_movie(job["ref_id"])
+        if not movie:
+            raise RuntimeError("movie missing")
+        quality = "720p"
+        plan = self.organizer.movie_plan(
+            title=movie["title"],
+            year=movie.get("year"),
+            quality=quality,
+            extension=staging_file.suffix or ".mkv",
+        )
+        final = await self.organizer.finalize_movie(
+            staging_file,
+            plan,
+            tmdb_id=movie["tmdb_id"],
+            title=movie["title"],
+            original_title=movie.get("original_title"),
+            year=movie.get("year"),
+            overview=movie.get("overview"),
+            imdb_id=None,
+            poster_url=movie.get("poster_url"),
+            fanart_url=movie.get("fanart_url"),
+        )
+        await self.store.set_movie_file(movie["id"], str(final), has_file=True)
+
+    async def _import_episode(self, job: dict, staging_file: Path) -> None:
+        episode = await self.store.get_episode(job["ref_id"])
+        if not episode:
+            raise RuntimeError("episode missing")
+        series = await self.store.get_series(episode["series_id"])
+        if not series:
+            raise RuntimeError("series missing")
+
+        quality = "720p"
+        plan = self.organizer.episode_plan(
+            series_title=series["title"],
+            year=series.get("year"),
+            season=episode["season_number"],
+            episode=episode["episode_number"],
+            episode_title=episode.get("title"),
+            quality=quality,
+            extension=staging_file.suffix or ".mkv",
+        )
+        show_folder = self.organizer.series_folder(title=series["title"], year=series.get("year"))
+        final = await self.organizer.finalize_episode(
+            staging_file,
+            plan,
+            series_folder=show_folder,
+            series_title=series["title"],
+            original_title=series.get("original_title"),
+            year=series.get("year"),
+            tmdb_id=series["tmdb_id"],
+            overview=series.get("overview"),
+            season=episode["season_number"],
+            episode=episode["episode_number"],
+            episode_title=episode.get("title") or f"Episode {episode['episode_number']}",
+            poster_url=series.get("poster_url"),
+            fanart_url=series.get("fanart_url"),
+        )
+        await self.store.set_episode_file(episode["id"], str(final), has_file=True)
+        if not series.get("path"):
+            await self.store.set_series_path(series["id"], str(show_folder))

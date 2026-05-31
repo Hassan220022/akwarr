@@ -1,0 +1,30 @@
+# CT107 integration overlay — attach to existing media_network
+# Usage: docker compose -f docker-compose.yml -f docker-compose.media-stack.yml up -d
+
+services:
+  akwarr-radarr:
+    networks:
+      - akwarr
+      - media_network
+    environment:
+      FLARESOLVERR_URL: http://flaresolverr:8191/v1
+    volumes:
+      - /media:/media
+
+  akwarr-sonarr:
+    networks:
+      - akwarr
+      - media_network
+    environment:
+      FLARESOLVERR_URL: http://flaresolverr:8191/v1
+    volumes:
+      - /media:/media
+
+  akwarr-aria2:
+    volumes:
+      - /media:/media
+
+networks:
+  media_network:
+    external:
+      name: ${MEDIA_NETWORK_NAME:-media_network}

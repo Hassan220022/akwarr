@@ -1,0 +1,481 @@
+"""SQLite persistence for movies, series, episodes, and download jobs."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+
+
+def utcnow() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+class JobStatus(StrEnum):
+    PENDING = "pending"
+    DOWNLOADING = "downloading"
+    IMPORTING = "importing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class Store:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        movies_path: Path | None = None,
+        series_path: Path | None = None,
+        staging_path: Path | None = None,
+    ) -> None:
+        self.db_path = db_path
+        self.movies_path = movies_path or Path("/media/Movie/Arabic")
+        self.series_path = series_path or Path("/media/Serries/Arabic")
+        self.staging_path = staging_path or Path("/media/Download/akwarr-staging")
+
+    async def init(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS movies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tmdb_id INTEGER UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    original_title TEXT,
+                    year INTEGER,
+                    overview TEXT,
+                    poster_url TEXT,
+                    fanart_url TEXT,
+                    akwam_url TEXT,
+                    path TEXT,
+                    has_file INTEGER NOT NULL DEFAULT 0,
+                    monitored INTEGER NOT NULL DEFAULT 1,
+                    quality_profile_id INTEGER NOT NULL DEFAULT 1,
+                    root_folder_path TEXT NOT NULL,
+                    added TEXT NOT NULL,
+                    metadata_json TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS series (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tmdb_id INTEGER UNIQUE NOT NULL,
+                    tvdb_id INTEGER,
+                    title TEXT NOT NULL,
+                    original_title TEXT,
+                    year INTEGER,
+                    overview TEXT,
+                    poster_url TEXT,
+                    fanart_url TEXT,
+                    akwam_url TEXT,
+                    path TEXT,
+                    monitored INTEGER NOT NULL DEFAULT 1,
+                    season_folder INTEGER NOT NULL DEFAULT 1,
+                    quality_profile_id INTEGER NOT NULL DEFAULT 1,
+                    language_profile_id INTEGER NOT NULL DEFAULT 1,
+                    root_folder_path TEXT NOT NULL,
+                    added TEXT NOT NULL,
+                    metadata_json TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS episodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    series_id INTEGER NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    episode_number INTEGER NOT NULL,
+                    title TEXT,
+                    akwam_url TEXT,
+                    path TEXT,
+                    has_file INTEGER NOT NULL DEFAULT 0,
+                    monitored INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(series_id, season_number, episode_number),
+                    FOREIGN KEY(series_id) REFERENCES series(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    ref_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    aria2_gid TEXT,
+                    staging_path TEXT,
+                    dest_path TEXT,
+                    error TEXT,
+                    created TEXT NOT NULL,
+                    updated TEXT NOT NULL
+                );
+                """
+            )
+            await self._migrate_legacy_media_paths(db)
+            await db.commit()
+
+    async def _migrate_legacy_media_paths(self, db: aiosqlite.Connection) -> None:
+        replacements = [
+            ("/media/arabic/movies", str(self.movies_path)),
+            ("/media/arabic/series", str(self.series_path)),
+            ("/media/arabic/.staging", str(self.staging_path)),
+        ]
+        for old, new in replacements:
+            for table, columns in (
+                ("movies", ("path", "root_folder_path")),
+                ("series", ("path", "root_folder_path")),
+                ("episodes", ("path",)),
+                ("jobs", ("staging_path", "dest_path")),
+            ):
+                for column in columns:
+                    await db.execute(
+                        f"""
+                        UPDATE {table}
+                        SET {column} = replace({column}, ?, ?)
+                        WHERE {column} LIKE ?
+                        """,
+                        (old, new, f"{old}%"),
+                    )
+
+    # ── Movies ──
+
+    async def add_movie(self, data: dict[str, Any]) -> dict[str, Any]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            now = utcnow()
+            await db.execute(
+                """
+                INSERT INTO movies (
+                    tmdb_id, title, original_title, year, overview,
+                    poster_url, fanart_url, akwam_url, path, has_file,
+                    monitored, quality_profile_id, root_folder_path, added, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tmdb_id) DO UPDATE SET
+                    title=excluded.title,
+                    original_title=excluded.original_title,
+                    year=excluded.year,
+                    overview=excluded.overview,
+                    monitored=excluded.monitored,
+                    quality_profile_id=excluded.quality_profile_id,
+                    root_folder_path=excluded.root_folder_path
+                """,
+                (
+                    data["tmdb_id"],
+                    data["title"],
+                    data.get("original_title"),
+                    data.get("year"),
+                    data.get("overview"),
+                    data.get("poster_url"),
+                    data.get("fanart_url"),
+                    data.get("akwam_url"),
+                    data.get("path"),
+                    int(data.get("has_file", False)),
+                    int(data.get("monitored", True)),
+                    data.get("quality_profile_id", 1),
+                    data["root_folder_path"],
+                    now,
+                    json.dumps(data.get("metadata") or {}),
+                ),
+            )
+            await db.commit()
+            return await self.get_movie_by_tmdb(data["tmdb_id"])  # type: ignore[return-value]
+
+    async def list_movies(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM movies ORDER BY id")
+            rows = await cur.fetchall()
+            return [self._movie_row(r) for r in rows]
+
+    async def get_movie(self, movie_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM movies WHERE id = ?", (movie_id,))
+            row = await cur.fetchone()
+            return self._movie_row(row) if row else None
+
+    async def get_movie_by_tmdb(self, tmdb_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM movies WHERE tmdb_id = ?", (tmdb_id,))
+            row = await cur.fetchone()
+            return self._movie_row(row) if row else None
+
+    async def set_movie_file(self, movie_id: int, path: str, has_file: bool = True) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE movies SET path = ?, has_file = ? WHERE id = ?",
+                (path, int(has_file), movie_id),
+            )
+            await db.commit()
+
+    async def update_movie_akwam(self, movie_id: int, akwam_url: str, poster: str | None, fanart: str | None) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE movies SET akwam_url = ?,
+                    poster_url = COALESCE(?, poster_url),
+                    fanart_url = COALESCE(?, fanart_url)
+                WHERE id = ?
+                """,
+                (akwam_url, poster, fanart, movie_id),
+            )
+            await db.commit()
+
+    def _movie_row(self, row: aiosqlite.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "tmdb_id": row["tmdb_id"],
+            "title": row["title"],
+            "original_title": row["original_title"],
+            "year": row["year"],
+            "overview": row["overview"],
+            "poster_url": row["poster_url"],
+            "fanart_url": row["fanart_url"],
+            "akwam_url": row["akwam_url"],
+            "path": row["path"],
+            "has_file": bool(row["has_file"]),
+            "monitored": bool(row["monitored"]),
+            "quality_profile_id": row["quality_profile_id"],
+            "root_folder_path": row["root_folder_path"],
+            "added": row["added"],
+        }
+
+    # ── Series ──
+
+    async def add_series(self, data: dict[str, Any]) -> dict[str, Any]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            now = utcnow()
+            await db.execute(
+                """
+                INSERT INTO series (
+                    tmdb_id, tvdb_id, title, original_title, year, overview,
+                    poster_url, fanart_url, akwam_url, path, monitored, season_folder,
+                    quality_profile_id, language_profile_id, root_folder_path, added, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tmdb_id) DO UPDATE SET
+                    title=excluded.title,
+                    original_title=excluded.original_title,
+                    year=excluded.year,
+                    monitored=excluded.monitored,
+                    quality_profile_id=excluded.quality_profile_id,
+                    language_profile_id=excluded.language_profile_id,
+                    root_folder_path=excluded.root_folder_path
+                """,
+                (
+                    data["tmdb_id"],
+                    data.get("tvdb_id"),
+                    data["title"],
+                    data.get("original_title"),
+                    data.get("year"),
+                    data.get("overview"),
+                    data.get("poster_url"),
+                    data.get("fanart_url"),
+                    data.get("akwam_url"),
+                    data.get("path"),
+                    int(data.get("monitored", True)),
+                    int(data.get("season_folder", True)),
+                    data.get("quality_profile_id", 1),
+                    data.get("language_profile_id", 1),
+                    data["root_folder_path"],
+                    now,
+                    json.dumps(data.get("metadata") or {}),
+                ),
+            )
+            await db.commit()
+            return await self.get_series_by_tmdb(data["tmdb_id"])  # type: ignore[return-value]
+
+    async def list_series(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM series ORDER BY id")
+            rows = await cur.fetchall()
+            return [self._series_row(r) for r in rows]
+
+    async def get_series(self, series_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM series WHERE id = ?", (series_id,))
+            row = await cur.fetchone()
+            return self._series_row(row) if row else None
+
+    async def get_series_by_tmdb(self, tmdb_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM series WHERE tmdb_id = ?", (tmdb_id,))
+            row = await cur.fetchone()
+            return self._series_row(row) if row else None
+
+    async def set_series_path(self, series_id: int, path: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("UPDATE series SET path = ? WHERE id = ?", (path, series_id))
+            await db.commit()
+
+    def _series_row(self, row: aiosqlite.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "tmdb_id": row["tmdb_id"],
+            "tvdb_id": row["tvdb_id"],
+            "title": row["title"],
+            "original_title": row["original_title"],
+            "year": row["year"],
+            "overview": row["overview"],
+            "poster_url": row["poster_url"],
+            "fanart_url": row["fanart_url"],
+            "akwam_url": row["akwam_url"],
+            "path": row["path"],
+            "monitored": bool(row["monitored"]),
+            "season_folder": bool(row["season_folder"]),
+            "quality_profile_id": row["quality_profile_id"],
+            "language_profile_id": row["language_profile_id"],
+            "root_folder_path": row["root_folder_path"],
+            "added": row["added"],
+        }
+
+    # ── Episodes ──
+
+    async def upsert_episode(self, data: dict[str, Any]) -> dict[str, Any]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                """
+                INSERT INTO episodes (
+                    series_id, season_number, episode_number, title, akwam_url, path, has_file, monitored
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
+                    title=excluded.title,
+                    akwam_url=COALESCE(excluded.akwam_url, episodes.akwam_url),
+                    monitored=excluded.monitored
+                """,
+                (
+                    data["series_id"],
+                    data["season_number"],
+                    data["episode_number"],
+                    data.get("title"),
+                    data.get("akwam_url"),
+                    data.get("path"),
+                    int(data.get("has_file", False)),
+                    int(data.get("monitored", True)),
+                ),
+            )
+            await db.commit()
+            cur = await db.execute(
+                """
+                SELECT * FROM episodes
+                WHERE series_id = ? AND season_number = ? AND episode_number = ?
+                """,
+                (data["series_id"], data["season_number"], data["episode_number"]),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else data
+
+    async def list_episodes(self, series_id: int | None = None) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if series_id is None:
+                cur = await db.execute("SELECT * FROM episodes ORDER BY series_id, season_number, episode_number")
+            else:
+                cur = await db.execute(
+                    "SELECT * FROM episodes WHERE series_id = ? ORDER BY season_number, episode_number",
+                    (series_id,),
+                )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def set_episode_file(self, episode_id: int, path: str, has_file: bool = True) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE episodes SET path = ?, has_file = ? WHERE id = ?",
+                (path, int(has_file), episode_id),
+            )
+            await db.commit()
+
+    async def get_episode(self, episode_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    # ── Jobs ──
+
+    async def create_job(self, kind: str, ref_id: int, dest_path: str) -> int:
+        now = utcnow()
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                INSERT INTO jobs (kind, ref_id, status, dest_path, created, updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (kind, ref_id, JobStatus.PENDING, dest_path, now, now),
+            )
+            await db.commit()
+            return cur.lastrowid or 0
+
+    async def list_pending_jobs(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT * FROM jobs
+                WHERE status IN ('pending', 'downloading', 'importing')
+                ORDER BY id
+                """
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def list_jobs(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT * FROM jobs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def update_job(
+        self,
+        job_id: int,
+        *,
+        status: str | None = None,
+        aria2_gid: str | None = None,
+        staging_path: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        fields: list[str] = ["updated = ?"]
+        values: list[Any] = [utcnow()]
+        if status is not None:
+            fields.append("status = ?")
+            values.append(status)
+        if aria2_gid is not None:
+            fields.append("aria2_gid = ?")
+            values.append(aria2_gid)
+        if staging_path is not None:
+            fields.append("staging_path = ?")
+            values.append(staging_path)
+        if error is not None:
+            fields.append("error = ?")
+            values.append(error)
+        values.append(job_id)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", values)
+            await db.commit()
+
+    async def get_job(self, job_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+@dataclass
+class MovieRecord:
+    tmdb_id: int
+    title: str
+    year: int | None = None
