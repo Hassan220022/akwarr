@@ -426,6 +426,9 @@ ADMIN_HTML = r"""<!doctype html>
       overflow: auto;
       max-height: min(70vh, 760px);
     }
+    .jobs-cards {
+      display: none;
+    }
     .filters {
       display: flex;
       gap: 7px;
@@ -505,6 +508,31 @@ ADMIN_HTML = r"""<!doctype html>
       cursor: not-allowed;
       opacity: .45;
     }
+    .job-card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+    .job-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .job-card-head strong {
+      line-height: 1.25;
+      word-break: break-word;
+    }
+    .job-card .actions {
+      min-width: 0;
+    }
+    .job-card .actions button {
+      flex: 1 1 76px;
+      min-width: 0;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -571,6 +599,21 @@ ADMIN_HTML = r"""<!doctype html>
       input, select, button { height: 42px; }
       .row > input { min-width: 0; flex: 1 1 160px; }
       .table-wrap { max-height: 70vh; }
+    }
+    @media (max-width: 700px) {
+      .jobs-table { display: none; }
+      .jobs-cards {
+        display: grid;
+        gap: 10px;
+      }
+      .section-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .section-head button { width: 100%; }
+      .filters .filter {
+        flex: 1 1 calc(50% - 7px);
+      }
     }
   </style>
 </head>
@@ -668,7 +711,8 @@ ADMIN_HTML = r"""<!doctype html>
           <button class="filter" type="button" data-filter="failed">Failed</button>
           <button class="filter" type="button" data-filter="deleted">Deleted</button>
         </div>
-        <div class="pane table-wrap"><table><thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Destination</th><th>Error</th><th>Actions</th></tr></thead><tbody id="jobs"></tbody></table></div>
+        <div class="pane table-wrap jobs-table"><table><thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Destination</th><th>Error</th><th>Actions</th></tr></thead><tbody id="jobs"></tbody></table></div>
+        <div id="jobsCards" class="jobs-cards"></div>
       </div>
     </section>
 
@@ -801,6 +845,19 @@ ADMIN_HTML = r"""<!doctype html>
           <td>${controls(job)}</td>
         </tr>`;
     }
+    function jobCard(job) {
+      const path = job.dest_path || job.staging_path || '';
+      return `<div class="job-card">
+        <div class="job-card-head">
+          <strong>#${job.id} ${text(job.kind)}</strong>
+          <span class="tag ${text(job.status)}">${text(job.status)}</span>
+        </div>
+        <div class="meta">${progress(job) || 'No active progress'}</div>
+        <code class="mono-path">${text(path)}</code>
+        ${job.error ? `<div class="error">${text(job.error)}</div>` : ''}
+        ${controls(job)}
+      </div>`;
+    }
     function renderJobs() {
       const filtered = jobFilter === 'all'
         ? allJobs
@@ -808,6 +865,9 @@ ADMIN_HTML = r"""<!doctype html>
       document.querySelector('#jobs').innerHTML = filtered.length
         ? filtered.map(jobRow).join('')
         : `<tr><td colspan="7">${empty('No jobs for this filter.')}</td></tr>`;
+      document.querySelector('#jobsCards').innerHTML = filtered.length
+        ? filtered.map(jobCard).join('')
+        : empty('No jobs for this filter.');
       document.querySelector('#recentJobs').innerHTML = allJobs.slice(0, 6).map(job =>
         item(`#${job.id} ${job.kind}`, `<span class="tag ${text(job.status)}">${text(job.status)}</span><code>${text(job.dest_path || job.staging_path || '')}</code>`, job.status)
       ).join('') || empty('No download jobs yet.');
@@ -866,6 +926,7 @@ ADMIN_HTML = r"""<!doctype html>
         renderJobs();
       } catch (error) {
         document.querySelector('#jobs').innerHTML = `<tr><td colspan="7" class="error">${text(error.message)}</td></tr>`;
+        document.querySelector('#jobsCards').innerHTML = `<div class="empty error">${text(error.message)}</div>`;
         document.querySelector('#recentJobs').innerHTML = item('Jobs unavailable', text(error.message), 'failed');
       }
       try {

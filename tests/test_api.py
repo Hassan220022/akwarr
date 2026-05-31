@@ -886,5 +886,7 @@ async def test_monitor_ui_includes_download_control_buttons(monkeypatch: pytest.
     assert "pauseJob" in response.text
     assert "resumeJob" in response.text
     assert "deleteJob" in response.text
+    assert 'id="jobsCards"' in response.text
+    assert "function jobCard" in response.text
     assert 'data-filter="downloading"' in response.text
     assert "No jobs for this filter." in response.text
