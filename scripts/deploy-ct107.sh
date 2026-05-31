@@ -13,15 +13,19 @@ export JELLYFIN_URL="${JELLYFIN_URL:-http://192.168.1.20:8096}"
 log() { printf '[deploy] %s\n' "$*"; }
 run_remote() { ssh -o BatchMode=yes "${SSH_TARGET}" "$@"; }
 optional_setup_env=""
-if [[ -n "${TOTAL_BANDWIDTH_MBIT:-}" ]]; then
-  optional_setup_env+=" TOTAL_BANDWIDTH_MBIT=${TOTAL_BANDWIDTH_MBIT}"
-fi
-if [[ -n "${ARIA2_BANDWIDTH_LIMIT_PERCENT:-}" ]]; then
-  optional_setup_env+=" ARIA2_BANDWIDTH_LIMIT_PERCENT=${ARIA2_BANDWIDTH_LIMIT_PERCENT}"
-fi
-if [[ -n "${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT:-}" ]]; then
-  optional_setup_env+=" ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT=${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT}"
-fi
+append_optional_setup_env() {
+  local key="$1"
+  local value="${!key:-}"
+  local quoted
+  [[ -n "${value}" ]] || return 0
+  printf -v quoted '%q' "${value}"
+  optional_setup_env+=" ${key}=${quoted}"
+}
+append_optional_setup_env ARIA2_BANDWIDTH_LIMIT_PERCENT
+append_optional_setup_env ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT
+append_optional_setup_env BANDWIDTH_TEST_URL
+append_optional_setup_env BANDWIDTH_TEST_SECONDS
+append_optional_setup_env BANDWIDTH_MEASURED_BYTES_PER_SECOND
 
 log "Syncing -> ${SSH_TARGET}:${REMOTE_DIR}"
 run_remote "mkdir -p ${REMOTE_DIR}"
