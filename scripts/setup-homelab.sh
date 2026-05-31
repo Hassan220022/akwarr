@@ -90,6 +90,18 @@ for volume in "${COMPOSE_PROJECT_NAME}_akwarr-radarr-config" "${COMPOSE_PROJECT_
 done
 "${COMPOSE[@]}" -f docker-compose.yml -f docker-compose.media-stack.yml up -d --build
 
+log "Configuring aria2 for Akwam CDN"
+docker exec akwarr-aria2 sh -lc '
+set -e
+conf=/config/aria2.conf
+if grep -q "^check-certificate=" "$conf"; then
+  sed -i "s/^check-certificate=.*/check-certificate=false/" "$conf"
+else
+  printf "\n# Akwam Downet CDN has an incomplete certificate chain in aria2-pro.\ncheck-certificate=false\n" >>"$conf"
+fi
+'
+docker restart akwarr-aria2 >/dev/null
+
 log "Waiting for Akwarr APIs"
 for _ in $(seq 1 30); do
   if curl -sf -H "X-Api-Key: ${AKWARR_API_KEY}" http://127.0.0.1:7879/api/v3/system/status >/dev/null \
