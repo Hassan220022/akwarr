@@ -17,6 +17,12 @@ JELLYSEERR_URL="${JELLYSEERR_URL:-http://127.0.0.1:5055}"
 
 log() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
+existing_env_value() {
+  local key="$1"
+  [[ -f "${AKWARR_DIR}/.env" ]] || return 1
+  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${AKWARR_DIR}/.env"
+}
+
 require() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1"; exit 1; }; }
 require docker
 require git
@@ -50,6 +56,16 @@ else
   log "Using existing synced Akwarr directory at ${AKWARR_DIR}"
 fi
 
+# If TOTAL_BANDWIDTH_MBIT is unknown, use a conservative 100 Mbit baseline.
+# That makes the default aria2 ceiling 60 Mbit/s total across all downloads.
+source "${AKWARR_DIR}/scripts/aria2-bandwidth.sh"
+TOTAL_BANDWIDTH_MBIT="${TOTAL_BANDWIDTH_MBIT:-$(existing_env_value TOTAL_BANDWIDTH_MBIT || true)}"
+TOTAL_BANDWIDTH_MBIT="${TOTAL_BANDWIDTH_MBIT:-100}"
+ARIA2_BANDWIDTH_LIMIT_PERCENT="${ARIA2_BANDWIDTH_LIMIT_PERCENT:-$(existing_env_value ARIA2_BANDWIDTH_LIMIT_PERCENT || true)}"
+ARIA2_BANDWIDTH_LIMIT_PERCENT="${ARIA2_BANDWIDTH_LIMIT_PERCENT:-60}"
+ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT="${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT:-$(existing_env_value ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT || true)}"
+ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT="${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT:-$(aria2_limit_from_mbit "${TOTAL_BANDWIDTH_MBIT}" "${ARIA2_BANDWIDTH_LIMIT_PERCENT}")}"
+
 log "Writing ${AKWARR_DIR}/.env"
 cat >"${AKWARR_DIR}/.env" <<EOF
 AKWARR_API_KEY=${AKWARR_API_KEY}
@@ -66,6 +82,9 @@ FLARESOLVERR_ENABLE=true
 FLARESOLVERR_AUTO=true
 ARIA2_RPC_URL=http://akwarr-aria2:6800/jsonrpc
 ARIA2_SECRET=${ARIA2_SECRET:-P3TERX}
+TOTAL_BANDWIDTH_MBIT=${TOTAL_BANDWIDTH_MBIT}
+ARIA2_BANDWIDTH_LIMIT_PERCENT=${ARIA2_BANDWIDTH_LIMIT_PERCENT}
+ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT=${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT}
 PREFERRED_QUALITIES=720p,1080p,480p
 MAX_ACTIVE_DOWNLOADS=3
 MOVIES_PATH=/media/Movie/Arabic
@@ -91,15 +110,21 @@ done
 "${COMPOSE[@]}" -f docker-compose.yml -f docker-compose.media-stack.yml up -d --build
 
 log "Configuring aria2 for Akwam CDN"
-docker exec akwarr-aria2 sh -lc '
+docker exec -i -e ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT="${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT}" akwarr-aria2 sh -s <<'SH'
 set -e
 conf=/config/aria2.conf
-if grep -q "^check-certificate=" "$conf"; then
-  sed -i "s/^check-certificate=.*/check-certificate=false/" "$conf"
-else
-  printf "\n# Akwam Downet CDN has an incomplete certificate chain in aria2-pro.\ncheck-certificate=false\n" >>"$conf"
-fi
-'
+set_config() {
+  key="$1"
+  value="$2"
+  if grep -q "^${key}=" "$conf"; then
+    sed -i "s/^${key}=.*/${key}=${value}/" "$conf"
+  else
+    printf "\n%s=%s\n" "$key" "$value" >>"$conf"
+  fi
+}
+set_config check-certificate false
+set_config max-overall-download-limit "${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT}"
+SH
 docker restart akwarr-aria2 >/dev/null
 
 log "Waiting for Akwarr APIs"

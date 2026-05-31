@@ -157,6 +157,8 @@ See [`.env.example`](.env.example) for the full list. Key values:
 | `TMDB_API_KEY`                      | TMDB/IMDb metadata for titles + NFO  |
 | `ELCINEMA_ENABLE` / `ELCINEMA_BASE` | Arabic title bridge + NFO source URL |
 | `ARIA2_SECRET`                      | aria2 JSON-RPC token, default `P3TERX` |
+| `TOTAL_BANDWIDTH_MBIT` / `ARIA2_BANDWIDTH_LIMIT_PERCENT` | Total link Mbps and percent cap; defaults to 100 Mbps and 60% |
+| `ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT`  | aria2 total download cap, default `7324K` (60 Mbps) |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Trigger library refresh after import |
 | `MOVIES_PATH` / `SERIES_PATH`       | Final media destinations             |
 | `STAGING_PATH`                      | Temporary aria2 download area        |

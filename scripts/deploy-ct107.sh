@@ -12,6 +12,16 @@ export JELLYFIN_URL="${JELLYFIN_URL:-http://192.168.1.20:8096}"
 
 log() { printf '[deploy] %s\n' "$*"; }
 run_remote() { ssh -o BatchMode=yes "${SSH_TARGET}" "$@"; }
+optional_setup_env=""
+if [[ -n "${TOTAL_BANDWIDTH_MBIT:-}" ]]; then
+  optional_setup_env+=" TOTAL_BANDWIDTH_MBIT=${TOTAL_BANDWIDTH_MBIT}"
+fi
+if [[ -n "${ARIA2_BANDWIDTH_LIMIT_PERCENT:-}" ]]; then
+  optional_setup_env+=" ARIA2_BANDWIDTH_LIMIT_PERCENT=${ARIA2_BANDWIDTH_LIMIT_PERCENT}"
+fi
+if [[ -n "${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT:-}" ]]; then
+  optional_setup_env+=" ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT=${ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT}"
+fi
 
 log "Syncing -> ${SSH_TARGET}:${REMOTE_DIR}"
 run_remote "mkdir -p ${REMOTE_DIR}"
@@ -20,7 +30,7 @@ rsync -az --delete \
   "${LOCAL_SRC}/" "${SSH_TARGET}:${REMOTE_DIR}/"
 
 log "Running setup-homelab.sh on CT107"
-run_remote "AKWARR_DIR=${REMOTE_DIR} AKWARR_API_KEY=${AKWARR_API_KEY} TMDB_API_KEY=${TMDB_API_KEY} JELLYFIN_URL=${JELLYFIN_URL} JELLYFIN_API_KEY=${JELLYFIN_API_KEY} JELLYSEERR_API_KEY=${JELLYSEERR_API_KEY} bash ${REMOTE_DIR}/scripts/setup-homelab.sh"
+run_remote "AKWARR_DIR=${REMOTE_DIR} AKWARR_API_KEY=${AKWARR_API_KEY} TMDB_API_KEY=${TMDB_API_KEY} JELLYFIN_URL=${JELLYFIN_URL} JELLYFIN_API_KEY=${JELLYFIN_API_KEY} JELLYSEERR_API_KEY=${JELLYSEERR_API_KEY}${optional_setup_env} bash ${REMOTE_DIR}/scripts/setup-homelab.sh"
 
 log "Configuring Jellyfin libraries on CT113 (via LAN)"
 bash "${LOCAL_SRC}/scripts/configure-jellyfin.sh"
