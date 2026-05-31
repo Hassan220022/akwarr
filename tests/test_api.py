@@ -426,6 +426,9 @@ async def test_admin_ui_does_not_append_empty_api_key_query(
 
     assert response.status_code == 200
     assert "const trustedLanHost = location.hostname === 'akwam.mikawi.org';" in response.text
+    assert 'id="lanAuth"' in response.text
+    assert 'data-tab="downloads"' in response.text
+    assert 'data-tab="diagnostics"' in response.text
     assert "if (trustedLanHost) return path;" in response.text
     assert "if (!apiKey) return path;" in response.text
     assert "apikey=${encodeURIComponent(key())}" not in response.text
@@ -883,3 +886,5 @@ async def test_monitor_ui_includes_download_control_buttons(monkeypatch: pytest.
     assert "pauseJob" in response.text
     assert "resumeJob" in response.text
     assert "deleteJob" in response.text
+    assert 'data-filter="downloading"' in response.text
+    assert "No jobs for this filter." in response.text

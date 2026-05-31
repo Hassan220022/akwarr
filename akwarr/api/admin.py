@@ -257,16 +257,20 @@ ADMIN_HTML = r"""<!doctype html>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #111315;
-      --panel: #1a1f23;
-      --panel-2: #22282d;
-      --line: #394149;
-      --text: #f3f1e8;
-      --muted: #a9b0ad;
-      --green: #61d394;
-      --amber: #e3b34b;
-      --red: #e56b6f;
-      --cyan: #76c7d7;
+      --bg: #0f1314;
+      --surface: #151a1d;
+      --panel: #1b2226;
+      --panel-2: #232c31;
+      --line: #334149;
+      --line-strong: #4b5d66;
+      --text: #f5f1e7;
+      --muted: #a8b1ad;
+      --green: #6edb9a;
+      --amber: #efc85d;
+      --red: #ef7779;
+      --cyan: #7bc9d9;
+      --blue: #8ea8ff;
+      --shadow: 0 18px 52px rgba(0,0,0,.26);
     }
     * { box-sizing: border-box; }
     body {
@@ -275,19 +279,23 @@ ADMIN_HTML = r"""<!doctype html>
       color: var(--text);
       font-family: "Avenir Next", "Segoe UI", sans-serif;
       letter-spacing: 0;
+      min-width: 320px;
     }
     header {
       display: flex;
-      align-items: end;
+      align-items: center;
       justify-content: space-between;
       gap: 18px;
-      padding: 22px 28px 16px;
+      padding: 22px 28px 14px;
       border-bottom: 1px solid var(--line);
-      background: #15191c;
+      background: #131719;
+      position: sticky;
+      top: 0;
+      z-index: 20;
     }
     h1 {
       margin: 0;
-      font-size: 26px;
+      font-size: 28px;
       font-weight: 750;
     }
     .subtitle {
@@ -300,6 +308,16 @@ ADMIN_HTML = r"""<!doctype html>
       gap: 8px;
       align-items: center;
       min-width: min(460px, 100%);
+    }
+    .auth[hidden] { display: none; }
+    .lan-pill {
+      border: 1px solid #2f634c;
+      background: #16251e;
+      color: var(--green);
+      border-radius: 999px;
+      padding: 8px 11px;
+      font-size: 12px;
+      font-weight: 800;
     }
     input, select, button {
       height: 36px;
@@ -315,21 +333,43 @@ ADMIN_HTML = r"""<!doctype html>
       cursor: pointer;
       background: #263138;
       white-space: nowrap;
+      font-weight: 650;
     }
-    button:hover { border-color: var(--cyan); }
+    button:hover { border-color: var(--cyan); background: #2b3840; }
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid var(--cyan);
+      outline-offset: 2px;
+    }
+    .tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 28px;
+      border-bottom: 1px solid var(--line);
+      background: #101415;
+      position: sticky;
+      top: 81px;
+      z-index: 19;
+      overflow-x: auto;
+    }
+    .tab {
+      min-width: 112px;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+    }
+    .tab.active {
+      background: var(--text);
+      border-color: var(--text);
+      color: #101415;
+    }
     main {
-      display: grid;
-      grid-template-columns: minmax(320px, 440px) minmax(0, 1fr);
-      min-height: calc(100vh - 76px);
-    }
-    aside {
-      border-right: 1px solid var(--line);
-      padding: 18px;
-      background: #14181b;
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 18px 28px 32px;
     }
     section {
-      padding: 18px;
-      border-bottom: 1px solid var(--line);
+      padding: 0;
+      border-bottom: 0;
     }
     h2 {
       margin: 0 0 12px;
@@ -338,11 +378,27 @@ ADMIN_HTML = r"""<!doctype html>
       color: var(--muted);
       font-weight: 700;
     }
-    .row { display: flex; gap: 8px; align-items: center; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
+    }
+    .stack { display: grid; gap: 14px; }
+    .card {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: var(--shadow);
     }
     .metric {
       border: 1px solid var(--line);
@@ -366,10 +422,32 @@ ADMIN_HTML = r"""<!doctype html>
       border-radius: 8px;
       overflow: hidden;
     }
+    .table-wrap {
+      overflow: auto;
+      max-height: min(70vh, 760px);
+    }
+    .filters {
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .filter {
+      height: 30px;
+      border-radius: 999px;
+      padding: 0 11px;
+      color: var(--muted);
+      background: transparent;
+    }
+    .filter.active {
+      color: #101415;
+      border-color: var(--cyan);
+      background: var(--cyan);
+    }
     .list {
       display: grid;
       gap: 8px;
-      max-height: 410px;
+      max-height: min(62vh, 560px);
       overflow: auto;
       padding-right: 4px;
     }
@@ -399,21 +477,24 @@ ADMIN_HTML = r"""<!doctype html>
       margin-right: 5px;
       font-weight: 800;
     }
+    .tag.ok { background: var(--green); }
     .tag.pending, .tag.downloading, .tag.importing { background: var(--amber); }
     .tag.paused { background: var(--cyan); }
     .tag.failed { background: var(--red); }
     .tag.deleted { background: var(--muted); }
     .tag.metadata { background: var(--cyan); }
+    .tag.download, .tag.episode { background: var(--blue); }
     .actions {
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
-      min-width: 128px;
+      min-width: 142px;
     }
     .actions button {
-      width: 34px;
+      min-width: 40px;
       padding: 0;
-      font-size: 14px;
+      font-size: 13px;
+      border-color: var(--line-strong);
     }
     .actions button.danger {
       border-color: #6a3438;
@@ -428,6 +509,7 @@ ADMIN_HTML = r"""<!doctype html>
       width: 100%;
       border-collapse: collapse;
       font-size: 13px;
+      min-width: 980px;
     }
     th, td {
       text-align: left;
@@ -439,6 +521,17 @@ ADMIN_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 12px;
       text-transform: uppercase;
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      z-index: 2;
+    }
+    tbody tr:hover { background: rgba(123, 201, 217, .06); }
+    .mono-path {
+      display: block;
+      max-width: 560px;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
     }
     code {
       color: var(--cyan);
@@ -446,11 +539,38 @@ ADMIN_HTML = r"""<!doctype html>
     }
     .error { color: var(--red); }
     .ok { color: var(--green); }
+    .empty {
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      color: var(--muted);
+      background: rgba(255,255,255,.02);
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .section-head h2 { margin: 0; }
     @media (max-width: 900px) {
-      header, main { display: block; }
-      aside { border-right: 0; border-bottom: 1px solid var(--line); }
-      .grid { grid-template-columns: 1fr; }
+      header {
+        display: block;
+        padding: 18px;
+      }
+      h1 { font-size: 30px; }
+      main { padding: 14px; }
+      .tabs {
+        top: 0;
+        padding: 10px 14px;
+      }
+      .layout, .grid { grid-template-columns: 1fr; }
       .auth { margin-top: 14px; }
+      .auth button { flex: 0 0 auto; }
+      input, select, button { height: 42px; }
+      .row > input { min-width: 0; flex: 1 1 160px; }
+      .table-wrap { max-height: 70vh; }
     }
   </style>
 </head>
@@ -460,58 +580,104 @@ ADMIN_HTML = r"""<!doctype html>
       <h1>Akwarr Monitor</h1>
       <div class="subtitle">Akwam search, metadata, download queue, imported Arabic media</div>
     </div>
-    <div class="auth">
+    <div id="keyAuth" class="auth">
       <input id="apiKey" type="password" placeholder="Akwarr API key">
-      <button id="saveKey">Save</button>
-      <button id="refresh">Refresh</button>
+      <button id="saveKey" type="button">Save</button>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+    <div id="lanAuth" class="auth" hidden>
+      <span class="lan-pill">LAN auth active</span>
+      <button id="refreshLan" type="button">Refresh</button>
     </div>
   </header>
+  <nav class="tabs" aria-label="Monitor pages">
+    <button class="tab active" type="button" data-tab="overview">Overview</button>
+    <button class="tab" type="button" data-tab="search">Search</button>
+    <button class="tab" type="button" data-tab="downloads">Downloads</button>
+    <button class="tab" type="button" data-tab="library">Library</button>
+    <button class="tab" type="button" data-tab="diagnostics">Diagnostics</button>
+  </nav>
   <main>
-    <aside>
-      <section>
-        <h2>Akwam Search</h2>
-        <div class="row">
-          <select id="section">
-            <option value="movie">Movie</option>
-            <option value="series">Series</option>
-          </select>
-          <input id="term" placeholder="Arabic title">
-          <button id="search">Search</button>
-        </div>
-      </section>
-      <section>
-        <h2>ElCinema Bridge</h2>
-        <div class="row">
-          <input id="elcinemaTerm" placeholder="English or Arabic title">
-          <input id="elcinemaYear" placeholder="Year" style="max-width:82px">
-          <button id="elcinemaSearch">Find</button>
-        </div>
-        <div id="elcinemaResults" class="list" style="margin-top:10px"></div>
-      </section>
-      <section>
-        <h2>Search Results</h2>
-        <div id="results" class="list"></div>
-      </section>
-    </aside>
-    <div>
-      <section>
-        <h2>Status</h2>
+    <section id="overview" class="view active">
+      <div class="stack">
         <div class="grid">
-          <div class="metric"><strong id="jobTotal">0</strong><span>Jobs</span></div>
+          <div class="metric"><strong id="jobTotal">0</strong><span>Total jobs</span></div>
+          <div class="metric"><strong id="activeJobs">0</strong><span>Active downloads</span></div>
+          <div class="metric"><strong id="failedJobs">0</strong><span>Failed jobs</span></div>
           <div class="metric"><strong id="movieFiles">0</strong><span>Movie files</span></div>
           <div class="metric"><strong id="seriesCount">0</strong><span>Series files</span></div>
+          <div class="metric"><strong id="lastRefresh">--</strong><span>Last refresh</span></div>
         </div>
-      </section>
-      <section>
-        <h2>Download Jobs</h2>
-        <div class="pane"><table><thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Destination</th><th>Error</th><th>Actions</th></tr></thead><tbody id="jobs"></tbody></table></div>
-      </section>
-      <section>
-        <h2>Akwam Metadata</h2>
-        <div id="metadata" class="list"></div>
-      </section>
-      <section>
-        <h2>Imported Files</h2>
+        <div class="layout">
+          <div class="card">
+            <h2>Recent Jobs</h2>
+            <div id="recentJobs" class="list"></div>
+          </div>
+          <div class="card">
+            <h2>Latest Imported Files</h2>
+            <div id="recentFiles" class="list"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="searchView" class="view">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>Akwam Search</h2>
+            <div class="row">
+              <select id="section" aria-label="Akwam section">
+                <option value="movie">Movie</option>
+                <option value="series">Series</option>
+              </select>
+              <input id="term" placeholder="Arabic title">
+              <button id="search" type="button">Search</button>
+            </div>
+          </div>
+          <div class="card">
+            <h2>ElCinema Bridge</h2>
+            <div class="row">
+              <input id="elcinemaTerm" placeholder="English or Arabic title">
+              <input id="elcinemaYear" placeholder="Year" inputmode="numeric" style="max-width:96px">
+              <button id="elcinemaSearch" type="button">Find</button>
+            </div>
+            <div id="elcinemaResults" class="list" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-head">
+            <h2>Search Results</h2>
+            <button id="clearResults" type="button">Clear</button>
+          </div>
+          <div id="results" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="downloadsView" class="view">
+      <div class="card">
+        <div class="section-head">
+          <h2>Download Jobs</h2>
+          <button id="refreshDownloads" type="button">Refresh</button>
+        </div>
+        <div class="filters" aria-label="Download filters">
+          <button class="filter active" type="button" data-filter="all">All</button>
+          <button class="filter" type="button" data-filter="downloading">Downloading</button>
+          <button class="filter" type="button" data-filter="completed">Completed</button>
+          <button class="filter" type="button" data-filter="failed">Failed</button>
+          <button class="filter" type="button" data-filter="deleted">Deleted</button>
+        </div>
+        <div class="pane table-wrap"><table><thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Destination</th><th>Error</th><th>Actions</th></tr></thead><tbody id="jobs"></tbody></table></div>
+      </div>
+    </section>
+
+    <section id="libraryView" class="view">
+      <div class="card">
+        <div class="section-head">
+          <h2>Imported Files</h2>
+          <button id="refreshFiles" type="button">Refresh</button>
+        </div>
         <div class="grid">
           <div>
             <h2>Movies</h2>
@@ -526,8 +692,21 @@ ADMIN_HTML = r"""<!doctype html>
             <div id="resolved" class="list"></div>
           </div>
         </div>
-      </section>
-    </div>
+      </div>
+    </section>
+
+    <section id="diagnosticsView" class="view">
+      <div class="layout">
+        <div class="card">
+          <h2>Akwam Metadata</h2>
+          <div id="metadata" class="list"></div>
+        </div>
+        <div class="card">
+          <h2>Service Checks</h2>
+          <div id="diagnostics" class="list"></div>
+        </div>
+      </div>
+    </section>
   </main>
   <script>
     const params = new URLSearchParams(location.search);
@@ -535,6 +714,13 @@ ADMIN_HTML = r"""<!doctype html>
     const trustedLanHost = location.hostname === 'akwam.mikawi.org';
     const keyFromUrl = trustedLanHost ? '' : params.get('apikey') || params.get('apiKey') || '';
     keyInput.value = trustedLanHost ? '' : keyFromUrl || localStorage.getItem('akwarrApiKey') || '';
+    if (trustedLanHost) {
+      document.querySelector('#keyAuth').hidden = true;
+      document.querySelector('#lanAuth').hidden = false;
+    }
+    let allJobs = [];
+    let allFiles = { movies: [], series: [] };
+    let jobFilter = 'all';
 
     function key() { return keyInput.value.trim(); }
     function endpoint(path) {
@@ -556,6 +742,9 @@ ADMIN_HTML = r"""<!doctype html>
     }
     function item(title, body, tag = '') {
       return `<div class="item">${tag ? `<span class="tag ${text(tag)}">${text(tag)}</span>` : ''}<div class="title">${text(title)}</div><div class="meta">${body}</div></div>`;
+    }
+    function empty(label) {
+      return `<div class="empty">${text(label)}</div>`;
     }
     function bytes(value) {
       const size = Number(value || 0);
@@ -595,10 +784,59 @@ ADMIN_HTML = r"""<!doctype html>
       const canResume = hasGid && status === 'paused';
       const canDelete = !['completed', 'failed', 'deleted'].includes(status);
       return `<div class="actions">
-        <button title="Pause download" aria-label="Pause download" ${canPause ? '' : 'disabled'} onclick="pauseJob(${job.id})">⏸</button>
-        <button title="Resume download" aria-label="Resume download" ${canResume ? '' : 'disabled'} onclick="resumeJob(${job.id})">▶</button>
-        <button class="danger" title="Delete download" aria-label="Delete download" ${canDelete ? '' : 'disabled'} onclick="deleteJob(${job.id})">✕</button>
+        <button title="Pause download" aria-label="Pause download" ${canPause ? '' : 'disabled'} onclick="pauseJob(${job.id})">Pause</button>
+        <button title="Resume download" aria-label="Resume download" ${canResume ? '' : 'disabled'} onclick="resumeJob(${job.id})">Run</button>
+        <button class="danger" title="Delete download" aria-label="Delete download" ${canDelete ? '' : 'disabled'} onclick="deleteJob(${job.id})">Delete</button>
       </div>`;
+    }
+    function jobRow(job) {
+      return `
+        <tr>
+          <td>${job.id}</td>
+          <td>${text(job.kind)}</td>
+          <td><span class="tag ${text(job.status)}">${text(job.status)}</span></td>
+          <td>${progress(job)}</td>
+          <td><code class="mono-path">${text(job.dest_path || job.staging_path || '')}</code></td>
+          <td class="error">${text(job.error || '')}</td>
+          <td>${controls(job)}</td>
+        </tr>`;
+    }
+    function renderJobs() {
+      const filtered = jobFilter === 'all'
+        ? allJobs
+        : allJobs.filter(job => String(job.status || '') === jobFilter);
+      document.querySelector('#jobs').innerHTML = filtered.length
+        ? filtered.map(jobRow).join('')
+        : `<tr><td colspan="7">${empty('No jobs for this filter.')}</td></tr>`;
+      document.querySelector('#recentJobs').innerHTML = allJobs.slice(0, 6).map(job =>
+        item(`#${job.id} ${job.kind}`, `<span class="tag ${text(job.status)}">${text(job.status)}</span><code>${text(job.dest_path || job.staging_path || '')}</code>`, job.status)
+      ).join('') || empty('No download jobs yet.');
+    }
+    function renderFiles() {
+      document.querySelector('#movies').innerHTML = allFiles.movies.map(file =>
+        item(file.name, `<code>${text(file.relativePath)}</code><div>${text(bytes(file.size))}</div>`, file.kind)
+      ).join('') || empty('No movie files found.');
+      document.querySelector('#seriesList').innerHTML = allFiles.series.map(file =>
+        item(file.name, `<code>${text(file.relativePath)}</code><div>${text(bytes(file.size))}</div>`, file.kind)
+      ).join('') || empty('No series files found.');
+      document.querySelector('#recentFiles').innerHTML = [...allFiles.movies, ...allFiles.series].slice(0, 8).map(file =>
+        item(file.name, `<code>${text(file.relativePath)}</code>`, file.kind)
+      ).join('') || empty('No imported files found.');
+    }
+    function renderDiagnostics() {
+      document.querySelector('#diagnostics').innerHTML = [
+        item('Monitor API', 'Jobs and file endpoints responded.', 'ok'),
+        item('Auth mode', trustedLanHost ? 'akwam.mikawi.org LAN header injection' : 'Explicit API key', 'ok'),
+        item('Movies root', `<code>${text(allFiles.moviesRoot || '')}</code>`, 'metadata'),
+        item('Series root', `<code>${text(allFiles.seriesRoot || '')}</code>`, 'metadata')
+      ].join('');
+    }
+    function showTab(tab) {
+      document.querySelectorAll('.tab').forEach(button => {
+        button.classList.toggle('active', button.dataset.tab === tab);
+      });
+      document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+      document.querySelector(`#${tab === 'overview' ? 'overview' : `${tab}View`}`).classList.add('active');
     }
     async function command(path, method = 'POST') {
       const response = await fetch(endpoint(path), { method });
@@ -620,38 +858,34 @@ ADMIN_HTML = r"""<!doctype html>
     async function refresh() {
       try {
         const jobs = await loadJson('/api/v3/monitor/jobs');
+        allJobs = jobs.jobs || [];
+        const counts = jobs.counts || {};
         document.querySelector('#jobTotal').textContent = jobs.total;
-        document.querySelector('#jobs').innerHTML = jobs.jobs.map(job => `
-          <tr>
-            <td>${job.id}</td>
-            <td>${text(job.kind)}</td>
-            <td><span class="tag ${text(job.status)}">${text(job.status)}</span></td>
-            <td>${progress(job)}</td>
-            <td><code>${text(job.dest_path || job.staging_path || '')}</code></td>
-            <td class="error">${text(job.error || '')}</td>
-            <td>${controls(job)}</td>
-          </tr>`).join('');
+        document.querySelector('#activeJobs').textContent = Number(counts.downloading || 0) + Number(counts.importing || 0);
+        document.querySelector('#failedJobs').textContent = counts.failed || 0;
+        renderJobs();
       } catch (error) {
         document.querySelector('#jobs').innerHTML = `<tr><td colspan="7" class="error">${text(error.message)}</td></tr>`;
+        document.querySelector('#recentJobs').innerHTML = item('Jobs unavailable', text(error.message), 'failed');
       }
       try {
         const files = await loadJson('/api/v3/monitor/files');
+        allFiles = files;
         document.querySelector('#movieFiles').textContent = files.movies.length;
         document.querySelector('#seriesCount').textContent = files.series.length;
-        document.querySelector('#movies').innerHTML = files.movies.map(file =>
-          item(file.name, `<code>${text(file.relativePath)}</code>`, file.kind)
-        ).join('');
-        document.querySelector('#seriesList').innerHTML = files.series.map(file =>
-          item(file.name, `<code>${text(file.relativePath)}</code>`, file.kind)
-        ).join('');
+        document.querySelector('#lastRefresh').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        renderFiles();
+        renderDiagnostics();
       } catch (error) {
         document.querySelector('#movies').innerHTML = item('Files unavailable', text(error.message), 'failed');
+        document.querySelector('#recentFiles').innerHTML = item('Files unavailable', text(error.message), 'failed');
       }
     }
     async function search() {
       const term = document.querySelector('#term').value.trim();
       const section = document.querySelector('#section').value;
       if (!term) return;
+      document.querySelector('#results').innerHTML = empty('Searching Akwam...');
       const data = await loadJson(`/api/v3/akwam/search?term=${encodeURIComponent(term)}&section=${section}`);
       document.querySelector('#results').innerHTML = data.results.map(result =>
         item(result.title, `<code>${text(result.url)}</code><div class="row" style="margin-top:8px"><button data-url="${text(result.url)}" data-kind="${section}" class="metadataBtn">Metadata</button></div>`, result.kind)
@@ -665,6 +899,7 @@ ADMIN_HTML = r"""<!doctype html>
       const year = document.querySelector('#elcinemaYear').value.trim();
       const kind = document.querySelector('#section').value;
       if (!term) return;
+      document.querySelector('#elcinemaResults').innerHTML = empty('Searching ElCinema...');
       const path = `/api/v3/elcinema/search?term=${encodeURIComponent(term)}&kind=${kind}${year ? `&year=${encodeURIComponent(year)}` : ''}`;
       const data = await loadJson(path);
       const rows = data.results.map(result =>
@@ -682,6 +917,8 @@ ADMIN_HTML = r"""<!doctype html>
       });
     }
     async function metadata(url, kind) {
+      showTab('diagnostics');
+      document.querySelector('#metadata').innerHTML = empty('Loading Akwam metadata...');
       const data = await loadJson(`/api/v3/akwam/metadata?url=${encodeURIComponent(url)}&kind=${kind}`);
       const downloads = data.downloads.map(download =>
         item(download.quality, `<code>${text(download.link_url)}</code><div>${text(download.size || '')}</div><div class="row" style="margin-top:8px"><button class="resolveBtn" data-url="${text(download.link_url)}">Resolve</button></div>`, 'download')
@@ -705,11 +942,30 @@ ADMIN_HTML = r"""<!doctype html>
         box.innerHTML = item('Resolve failed', text(error.message), 'failed') + box.innerHTML;
       }
     }
+    document.querySelectorAll('.tab').forEach(button => {
+      button.addEventListener('click', () => showTab(button.dataset.tab));
+    });
+    document.querySelectorAll('.filter').forEach(button => {
+      button.addEventListener('click', () => {
+        jobFilter = button.dataset.filter || 'all';
+        document.querySelectorAll('.filter').forEach(item => item.classList.toggle('active', item === button));
+        renderJobs();
+      });
+    });
     document.querySelector('#saveKey').addEventListener('click', () => localStorage.setItem('akwarrApiKey', key()));
     document.querySelector('#refresh').addEventListener('click', refresh);
+    document.querySelector('#refreshLan')?.addEventListener('click', refresh);
+    document.querySelector('#refreshDownloads').addEventListener('click', refresh);
+    document.querySelector('#refreshFiles').addEventListener('click', refresh);
+    document.querySelector('#clearResults').addEventListener('click', () => {
+      document.querySelector('#results').innerHTML = '';
+      document.querySelector('#elcinemaResults').innerHTML = '';
+    });
     document.querySelector('#search').addEventListener('click', search);
     document.querySelector('#elcinemaSearch').addEventListener('click', elcinemaSearch);
     keyInput.addEventListener('keydown', event => { if (event.key === 'Enter') refresh(); });
+    document.querySelector('#term').addEventListener('keydown', event => { if (event.key === 'Enter') search(); });
+    document.querySelector('#elcinemaTerm').addEventListener('keydown', event => { if (event.key === 'Enter') elcinemaSearch(); });
     refresh();
   </script>
 </body>
