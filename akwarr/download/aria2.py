@@ -47,7 +47,13 @@ class Aria2Client:
             return data.get("result")
 
     async def add_uri(self, uri: str, dest_dir: str, filename: str) -> str:
-        options = {"dir": dest_dir, "out": filename}
+        options = {
+            "dir": dest_dir,
+            "out": filename,
+            "check-certificate": "false",
+            "referer": "https://akwam.it/",
+            "user-agent": "Mozilla/5.0",
+        }
         gid = await self._call("aria2.addUri", [uri], options)
         if not isinstance(gid, str):
             raise RuntimeError("aria2 did not return a GID")

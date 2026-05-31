@@ -75,7 +75,9 @@ async def test_aria2_tell_status_requests_progress_fields(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_aria2_add_uri_sends_single_uri_list(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_aria2_add_uri_sends_single_uri_list_with_akwam_cdn_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[dict] = []
     response = httpx.Response(
         200,
@@ -100,7 +102,13 @@ async def test_aria2_add_uri_sends_single_uri_list(monkeypatch: pytest.MonkeyPat
     assert calls[0]["params"] == [
         "token:secret",
         ["https://cdn.example/movie.mp4"],
-        {"dir": "/downloads", "out": "movie.mp4"},
+        {
+            "dir": "/downloads",
+            "out": "movie.mp4",
+            "check-certificate": "false",
+            "referer": "https://akwam.it/",
+            "user-agent": "Mozilla/5.0",
+        },
     ]
 
 
