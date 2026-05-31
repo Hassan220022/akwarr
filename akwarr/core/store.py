@@ -437,6 +437,20 @@ class Store:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
                 """
+                SELECT id FROM jobs
+                WHERE kind = ?
+                  AND ref_id = ?
+                  AND status IN ('pending', 'downloading', 'importing')
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (kind, ref_id),
+            )
+            existing = await cur.fetchone()
+            if existing:
+                return int(existing[0])
+            cur = await db.execute(
+                """
                 INSERT INTO jobs (kind, ref_id, status, dest_path, created, updated)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,

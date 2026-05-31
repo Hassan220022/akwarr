@@ -93,6 +93,57 @@ class FakeShortenerFetcher:
         )
 
 
+class FakeMislabeledEpisodeFetcher:
+    async def get(self, target_url: str) -> FetchResponse:
+        html = """
+        <html>
+          <body>
+            <h1>رأس الأفعى</h1>
+            <div class="bg-primary2">
+              <h2><a href="/episode/95599/series/الحلقة-12">حلقة 12 : مسلسل رأس الأفعى  13</a></h2>
+            </div>
+          </body>
+        </html>
+        """
+        return FetchResponse(text=html, status_code=200, url=target_url)
+
+
+class FakeEpisodeDownloadFetcher:
+    def __init__(self) -> None:
+        self.urls: list[str] = []
+
+    async def get(self, target_url: str) -> FetchResponse:
+        self.urls.append(target_url)
+        if "/episode/" in target_url:
+            html = """
+            <html>
+              <body>
+                <h1>حلقة 1 : مسلسل رأس الأفعى 1</h1>
+                <div class="tab-content quality">
+                  <a href="/link/episode-720">تحميل 720p</a>
+                </div>
+              </body>
+            </html>
+            """
+            return FetchResponse(text=html, status_code=200, url=target_url)
+        if "/link/" in target_url:
+            html = """
+            <html>
+              <body>
+                <a class="download-link" href="/download/episode-720">Click here to go for your link ...</a>
+              </body>
+            </html>
+            """
+            return FetchResponse(text=html, status_code=200, url=target_url)
+        if "cdn.example.test" in target_url:
+            raise AssertionError("direct media URL should not be fetched by Akwarr")
+        return FetchResponse(
+            text="https://cdn.example.test/series/s01e01.mp4",
+            status_code=200,
+            url=target_url,
+        )
+
+
 @pytest.mark.asyncio
 async def test_series_metadata_parses_arabic_episode_and_season_numbers(tmp_path: Path) -> None:
     settings = Settings(
@@ -108,6 +159,23 @@ async def test_series_metadata_parses_arabic_episode_and_season_numbers(tmp_path
     metadata = await scraper.fetch_metadata("https://akwam.it/series/test", kind="series")
 
     assert [(episode.season, episode.number) for episode in metadata.episodes] == [(2, 1), (2, 2)]
+
+
+@pytest.mark.asyncio
+async def test_series_metadata_uses_trailing_episode_number_when_card_is_mislabeled(tmp_path: Path) -> None:
+    settings = Settings(
+        mode="sonarr",
+        movies_path=tmp_path / "movies",
+        series_path=tmp_path / "series",
+        staging_path=tmp_path / "staging",
+        data_path=tmp_path / "config",
+    )
+    scraper = AkwamScraper(settings)
+    scraper.fetcher = FakeMislabeledEpisodeFetcher()  # type: ignore[assignment]
+
+    metadata = await scraper.fetch_metadata("https://akwam.it/series/5281/رأس-الأفعى", kind="series")
+
+    assert [episode.number for episode in metadata.episodes] == [13]
 
 
 @pytest.mark.asyncio
@@ -168,6 +236,30 @@ async def test_resolve_direct_url_follows_akwam_shortener_download_link(tmp_path
     assert fetcher.urls == [
         "https://akwam.it/link/11140",
         "https://akwam.it/download/179594/11140/%D8%A7%D9%84%D8%B3%D8%AA",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_episode_download_url_fetches_episode_download_and_resolves_direct_url(tmp_path: Path) -> None:
+    settings = Settings(
+        mode="sonarr",
+        movies_path=tmp_path / "movies",
+        series_path=tmp_path / "series",
+        staging_path=tmp_path / "staging",
+        data_path=tmp_path / "config",
+    )
+    scraper = AkwamScraper(settings)
+    fetcher = FakeEpisodeDownloadFetcher()
+    scraper.fetcher = fetcher  # type: ignore[assignment]
+
+    quality, direct = await scraper.episode_download_url("https://akwam.it/episode/93879/رأس-الأفعى/الحلقة-1")
+
+    assert quality == "720p"
+    assert direct == "https://cdn.example.test/series/s01e01.mp4"
+    assert fetcher.urls == [
+        "https://akwam.it/episode/93879/رأس-الأفعى/الحلقة-1",
+        "https://akwam.it/link/episode-720",
+        "https://akwam.it/download/episode-720",
     ]
 
 

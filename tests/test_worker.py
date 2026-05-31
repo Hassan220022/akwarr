@@ -61,6 +61,28 @@ class FixedStagingOrganizer:
         return self.path
 
 
+class FakeProcessStore(FakeStore):
+    def __init__(self, jobs: list[dict]) -> None:
+        super().__init__()
+        self.jobs = jobs
+        self.started: list[int] = []
+        self.checked: list[int] = []
+
+    async def list_pending_jobs(self) -> list[dict]:
+        return self.jobs
+
+
+class ProcessWorker(DownloadWorker):
+    async def _start_job(self, job: dict) -> None:
+        self.store.started.append(job["id"])
+
+    async def _check_download(self, job: dict) -> None:
+        self.store.checked.append(job["id"])
+
+    async def _import_job(self, job: dict) -> None:
+        self.store.checked.append(job["id"])
+
+
 @pytest.mark.asyncio
 async def test_check_download_uses_aria2_actual_file_path_before_import() -> None:
     worker = object.__new__(DownloadWorker)
@@ -85,6 +107,24 @@ async def test_check_download_uses_aria2_actual_file_path_before_import() -> Non
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_jobs_respects_max_active_downloads() -> None:
+    worker = object.__new__(ProcessWorker)
+    worker.store = FakeProcessStore(
+        [
+            {"id": 1, "status": JobStatus.DOWNLOADING},
+            {"id": 2, "status": JobStatus.PENDING},
+            {"id": 3, "status": JobStatus.PENDING},
+        ]
+    )
+    worker.settings = SimpleNamespace(max_active_downloads=2)
+
+    await worker._process_jobs()
+
+    assert worker.store.checked == [1]
+    assert worker.store.started == [2]
 
 
 class LegacyStagingAria2:

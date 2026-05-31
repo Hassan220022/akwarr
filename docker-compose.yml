@@ -19,6 +19,7 @@ services:
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
       METADATA_LANGUAGE: ar
       SAVE_AKWAM_ARTWORK: "true"
+      MAX_ACTIVE_DOWNLOADS: ${MAX_ACTIVE_DOWNLOADS:-3}
     volumes:
       - ${MEDIA_ROOT:-./data/media}:/media
       - akwarr-radarr-config:/config/radarr
@@ -50,6 +51,7 @@ services:
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
       METADATA_LANGUAGE: ar
       SAVE_AKWAM_ARTWORK: "true"
+      MAX_ACTIVE_DOWNLOADS: ${MAX_ACTIVE_DOWNLOADS:-3}
     volumes:
       - ${MEDIA_ROOT:-./data/media}:/media
       - akwarr-sonarr-config:/config/sonarr

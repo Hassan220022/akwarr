@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     )
 
     worker_poll_seconds: int = Field(default=10, alias="WORKER_POLL_SECONDS")
+    max_active_downloads: int = Field(default=3, alias="MAX_ACTIVE_DOWNLOADS")
     file_mode: int = Field(default=0o664, alias="FILE_MODE")
     dir_mode: int = Field(default=0o775, alias="DIR_MODE")
 

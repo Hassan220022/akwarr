@@ -39,14 +39,22 @@ class DownloadWorker:
 
     async def _process_jobs(self) -> None:
         jobs = await self.store.list_pending_jobs()
+        active_statuses = {JobStatus.DOWNLOADING, JobStatus.IMPORTING}
+        active_count = sum(1 for job in jobs if job["status"] in active_statuses)
+        max_active = max(int(self.settings.max_active_downloads), 1)
         for job in jobs:
             status = job["status"]
-            if status == JobStatus.PENDING:
-                await self._start_job(job)
-            elif status == JobStatus.DOWNLOADING:
+            if status == JobStatus.DOWNLOADING:
                 await self._check_download(job)
             elif status == JobStatus.IMPORTING:
                 await self._import_job(job)
+        for job in jobs:
+            if job["status"] != JobStatus.PENDING:
+                continue
+            if active_count >= max_active:
+                break
+            await self._start_job(job)
+            active_count += 1
 
     async def _start_job(self, job: dict) -> None:
         job_id = job["id"]

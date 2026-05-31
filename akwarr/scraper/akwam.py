@@ -347,7 +347,13 @@ def _parse_episode_number(title: str) -> int | None:
     match = RGX_EPISODE_NUM.search(title)
     if not match:
         return None
-    return _parse_int(match.group(1))
+    episode = _parse_int(match.group(1))
+    trailing = re.search(r"([\d٠-٩]+)\s*$", title)
+    if trailing:
+        trailing_number = _parse_int(trailing.group(1))
+        if episode and trailing_number and trailing_number <= 200 and episode != trailing_number:
+            return trailing_number
+    return episode
 
 
 def _parse_season_number(title: str) -> int | None:

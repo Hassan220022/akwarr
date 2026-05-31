@@ -67,6 +67,7 @@ FLARESOLVERR_AUTO=true
 ARIA2_RPC_URL=http://akwarr-aria2:6800/jsonrpc
 ARIA2_SECRET=${ARIA2_SECRET:-P3TERX}
 PREFERRED_QUALITIES=720p,1080p,480p
+MAX_ACTIVE_DOWNLOADS=3
 MOVIES_PATH=/media/Movie/Arabic
 SERIES_PATH=/media/Serries/Arabic
 STAGING_PATH=/media/Download/akwarr-staging

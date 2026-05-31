@@ -1,7 +1,7 @@
 import aiosqlite
 import pytest
 
-from akwarr.core.store import Store
+from akwarr.core.store import JobStatus, Store
 
 
 @pytest.mark.asyncio
@@ -118,3 +118,23 @@ async def test_store_round_trips_external_metadata_for_import(tmp_path):
     assert movie["metadata"]["elcinema"]["url"] == "https://elcinema.com/work/2019662"
     assert series["metadata"]["imdb_id"] == "tt12411074"
     assert series["metadata"]["elcinema"]["url"] == "https://elcinema.com/work/2058052"
+
+
+@pytest.mark.asyncio
+async def test_create_job_reuses_active_job_for_same_media_ref(tmp_path):
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    first = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E12.mkv")
+    second = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E13.mkv")
+
+    jobs = await store.list_pending_jobs()
+
+    assert second == first
+    assert [(job["kind"], job["ref_id"], job["status"]) for job in jobs] == [
+        ("episode", 12, JobStatus.PENDING)
+    ]

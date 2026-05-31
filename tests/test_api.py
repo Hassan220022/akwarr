@@ -793,6 +793,106 @@ async def test_sonarr_add_series_accepts_jellyseerr_arabic_tvdb_payload(
 
 
 @pytest.mark.asyncio
+async def test_sonarr_add_series_creates_unique_episode_jobs_for_jellyseerr_search_now(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {"episodes": [], "jobs": []}
+
+    class FakeStore:
+        def __init__(self):
+            self.next_episode_id = 1
+
+        async def add_series(self, data):
+            captured["series"] = data
+            return {"id": 7, "path": None, "added": None, **data}
+
+        async def upsert_episode(self, data):
+            episode = {"id": self.next_episode_id, "path": None, **data}
+            self.next_episode_id += 1
+            captured["episodes"].append(episode)
+            return episode
+
+        async def create_job(self, kind, ref_id, dest_path):
+            captured["jobs"].append((kind, ref_id, dest_path))
+            return len(captured["jobs"])
+
+        async def list_episodes(self, series_id):
+            return captured["episodes"]
+
+    class FakeTMDBClient:
+        def __init__(self, settings):
+            pass
+
+        async def tv_from_tvdb(self, tvdb_id):
+            return {
+                "id": 301326,
+                "title": "رأس الأفعى",
+                "original_title": "رأس الأفعى",
+                "year": 2026,
+                "overview": "",
+                "poster_path": None,
+                "backdrop_path": None,
+            }
+
+        @staticmethod
+        def poster_url(path):
+            return None
+
+    class FakeAkwamScraper:
+        def __init__(self, settings):
+            pass
+
+        async def best_match(self, query, *, section, alt_queries):
+            return SimpleNamespace(url="https://akwam.it/series/5281/رأس-الأفعى", poster=None)
+
+        async def fetch_metadata(self, url, *, kind):
+            return SimpleNamespace(
+                poster=None,
+                fanart=None,
+                overview=None,
+                episodes=[
+                    SimpleNamespace(season=1, number=1, title="حلقة 1", url="https://akwam.it/episode/1"),
+                    SimpleNamespace(season=1, number=1, title="حلقة 1 مكرر", url="https://akwam.it/episode/1b"),
+                    SimpleNamespace(season=1, number=2, title="حلقة 2", url="https://akwam.it/episode/2"),
+                ],
+            )
+
+    class FakeElCinemaScraper:
+        def __init__(self, settings):
+            pass
+
+        async def arabic_candidates(self, *queries, year, kind):
+            return []
+
+    series_root = tmp_path / "Serries" / "Arabic"
+    monkeypatch.setenv("SERIES_PATH", str(series_root))
+    get_settings.cache_clear()
+    monkeypatch.setattr(sonarr, "store", FakeStore())
+    monkeypatch.setattr(sonarr, "TMDBClient", FakeTMDBClient)
+    monkeypatch.setattr(sonarr, "AkwamScraper", FakeAkwamScraper)
+    monkeypatch.setattr(sonarr, "ElCinemaScraper", FakeElCinemaScraper)
+
+    payload = await sonarr.add_series(
+        sonarr.SeriesAddBody.model_validate(
+            {
+                "title": "رأس الأفعى",
+                "tvdbid": 473659,
+                "rootFolderPath": "/data/Serries/English",
+                "seasons": [1],
+                "searchNow": True,
+            }
+        )
+    )
+
+    assert [episode["episode_number"] for episode in captured["episodes"]] == [1, 2]
+    assert len(captured["jobs"]) == 2
+    assert [job[0] for job in captured["jobs"]] == ["episode", "episode"]
+    assert all(str(series_root) in job[2] for job in captured["jobs"])
+    assert payload["statistics"]["episodeCount"] == 2
+
+
+@pytest.mark.asyncio
 async def test_monitor_files_reports_arabic_media_paths(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

@@ -292,10 +292,15 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
         search_missing = True
 
     if search_missing and akwam_episodes:
+        queued_episodes: set[tuple[int, int]] = set()
         for ep in akwam_episodes:
             season = ep.season or default_season
             if monitored_seasons and season not in monitored_seasons:
                 continue
+            episode_key = (season, ep.number)
+            if episode_key in queued_episodes:
+                continue
+            queued_episodes.add(episode_key)
             ep_record = await s.upsert_episode(
                 {
                     "series_id": record["id"],
