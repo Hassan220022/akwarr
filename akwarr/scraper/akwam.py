@@ -189,6 +189,7 @@ class AkwamScraper:
         downloads = await self._extract_downloads(html, page_url)
         episodes: list[AkwamEpisode] = []
         if kind == "series":
+            seen_episodes: set[tuple[int | None, int]] = set()
             for div in soup.find_all("div", class_="bg-primary2"):
                 h2 = div.find("h2")
                 if not h2:
@@ -200,12 +201,27 @@ class AkwamScraper:
                 episode_number = _parse_episode_number(ep_title)
                 if episode_number is None:
                     continue
+                season = _parse_season_number(ep_title)
+                episode_key = (season, episode_number)
+                if episode_key in seen_episodes:
+                    trailing_number = _parse_trailing_episode_number(ep_title)
+                    trailing_key = (season, trailing_number or episode_number)
+                    if (
+                        trailing_number
+                        and trailing_number != episode_number
+                        and trailing_key not in seen_episodes
+                    ):
+                        episode_number = trailing_number
+                        episode_key = trailing_key
+                    else:
+                        continue
+                seen_episodes.add(episode_key)
                 episodes.append(
                     AkwamEpisode(
                         number=episode_number,
                         title=ep_title,
                         url=urljoin(self.base, link["href"]),
-                        season=_parse_season_number(ep_title),
+                        season=season,
                     )
                 )
             episodes.sort(key=lambda e: e.number)
@@ -347,13 +363,17 @@ def _parse_episode_number(title: str) -> int | None:
     match = RGX_EPISODE_NUM.search(title)
     if not match:
         return None
-    episode = _parse_int(match.group(1))
+    return _parse_int(match.group(1))
+
+
+def _parse_trailing_episode_number(title: str) -> int | None:
     trailing = re.search(r"([\d٠-٩]+)\s*$", title)
-    if trailing:
-        trailing_number = _parse_int(trailing.group(1))
-        if episode and trailing_number and trailing_number <= 200 and episode != trailing_number:
-            return trailing_number
-    return episode
+    if not trailing:
+        return None
+    number = _parse_int(trailing.group(1))
+    if number and number <= 200:
+        return number
+    return None
 
 
 def _parse_season_number(title: str) -> int | None:

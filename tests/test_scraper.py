@@ -100,7 +100,25 @@ class FakeMislabeledEpisodeFetcher:
           <body>
             <h1>رأس الأفعى</h1>
             <div class="bg-primary2">
+              <h2><a href="/episode/95434/series/الحلقة-12">حلقة 12 : مسلسل رأس الأفعى  12</a></h2>
+            </div>
+            <div class="bg-primary2">
               <h2><a href="/episode/95599/series/الحلقة-12">حلقة 12 : مسلسل رأس الأفعى  13</a></h2>
+            </div>
+          </body>
+        </html>
+        """
+        return FetchResponse(text=html, status_code=200, url=target_url)
+
+
+class FakeNumericSeriesTitleFetcher:
+    async def get(self, target_url: str) -> FetchResponse:
+        html = """
+        <html>
+          <body>
+            <h1>مسلسل تجريبي 2</h1>
+            <div class="bg-primary2">
+              <h2><a href="/episode/1">حلقة 1 : مسلسل تجريبي 2</a></h2>
             </div>
           </body>
         </html>
@@ -175,7 +193,24 @@ async def test_series_metadata_uses_trailing_episode_number_when_card_is_mislabe
 
     metadata = await scraper.fetch_metadata("https://akwam.it/series/5281/رأس-الأفعى", kind="series")
 
-    assert [episode.number for episode in metadata.episodes] == [13]
+    assert [episode.number for episode in metadata.episodes] == [12, 13]
+
+
+@pytest.mark.asyncio
+async def test_series_metadata_does_not_treat_numeric_series_title_as_episode_number(tmp_path: Path) -> None:
+    settings = Settings(
+        mode="sonarr",
+        movies_path=tmp_path / "movies",
+        series_path=tmp_path / "series",
+        staging_path=tmp_path / "staging",
+        data_path=tmp_path / "config",
+    )
+    scraper = AkwamScraper(settings)
+    scraper.fetcher = FakeNumericSeriesTitleFetcher()  # type: ignore[assignment]
+
+    metadata = await scraper.fetch_metadata("https://akwam.it/series/numeric", kind="series")
+
+    assert [episode.number for episode in metadata.episodes] == [1]
 
 
 @pytest.mark.asyncio

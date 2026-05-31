@@ -440,7 +440,7 @@ class Store:
                 SELECT id FROM jobs
                 WHERE kind = ?
                   AND ref_id = ?
-                  AND status IN ('pending', 'downloading', 'importing')
+                  AND status IN ('pending', 'downloading', 'paused', 'importing')
                 ORDER BY id DESC
                 LIMIT 1
                 """,

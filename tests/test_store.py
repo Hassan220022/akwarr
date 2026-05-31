@@ -138,3 +138,19 @@ async def test_create_job_reuses_active_job_for_same_media_ref(tmp_path):
     assert [(job["kind"], job["ref_id"], job["status"]) for job in jobs] == [
         ("episode", 12, JobStatus.PENDING)
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_job_reuses_paused_job_for_same_media_ref(tmp_path):
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    first = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E12.mkv")
+    await store.update_job(first, status=JobStatus.PAUSED)
+    second = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E12.mkv")
+
+    assert second == first
