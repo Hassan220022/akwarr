@@ -46,7 +46,7 @@ class TMDBClient:
 
     async def tv(self, tmdb_id: int) -> dict[str, Any]:
         if not self.enabled:
-            return {"id": tmdb_id, "title": f"TMDB {tmdb_id}", "year": None}
+            return {"id": tmdb_id, "title": f"TMDB {tmdb_id}", "year": None, "seasons": []}
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(
                 f"{self.BASE}/tv/{tmdb_id}",
@@ -72,6 +72,7 @@ class TMDBClient:
                 "tvdb_id": external_ids.get("tvdb_id"),
                 "poster_path": data.get("poster_path"),
                 "backdrop_path": data.get("backdrop_path"),
+                "seasons": data.get("seasons") or [],
             }
 
     async def lookup_movie(self, term: str) -> list[dict[str, Any]]:
@@ -157,6 +158,7 @@ class TMDBClient:
         if not year and data.get("first_air_date"):
             year = int(str(data["first_air_date"])[:4])
         title = data.get("title") or data.get("name") or "Unknown"
+        seasons = self._season_lookup_payloads(data.get("seasons"))
         return {
             "title": title,
             "sortTitle": title,
@@ -164,7 +166,8 @@ class TMDBClient:
             "status": "continuing",
             "overview": data.get("overview") or "",
             "year": year,
-            "seasonCount": 1,
+            "seasonCount": len(seasons),
+            "seasons": seasons,
             "hasFile": False,
             "monitored": True,
             "tmdbId": data.get("id"),
@@ -172,6 +175,45 @@ class TMDBClient:
             "imdbId": data.get("imdb_id") or data.get("imdbId"),
             "images": [],
         }
+
+    @staticmethod
+    def _season_lookup_payloads(seasons: Any) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        for raw in seasons or []:
+            if not isinstance(raw, dict):
+                continue
+            season_number = raw.get("season_number", raw.get("seasonNumber"))
+            if season_number in (None, 0):
+                continue
+            episode_count = int(raw.get("episode_count", raw.get("episodeCount") or 0) or 0)
+            payloads.append(
+                {
+                    "seasonNumber": int(season_number),
+                    "monitored": True,
+                    "statistics": {
+                        "episodeFileCount": 0,
+                        "episodeCount": episode_count,
+                        "totalEpisodeCount": episode_count,
+                        "sizeOnDisk": 0,
+                        "percentOfEpisodes": 0,
+                    },
+                }
+            )
+        if not payloads:
+            payloads.append(
+                {
+                    "seasonNumber": 1,
+                    "monitored": True,
+                    "statistics": {
+                        "episodeFileCount": 0,
+                        "episodeCount": 0,
+                        "totalEpisodeCount": 0,
+                        "sizeOnDisk": 0,
+                        "percentOfEpisodes": 0,
+                    },
+                }
+            )
+        return sorted(payloads, key=lambda season: season["seasonNumber"])
 
     @staticmethod
     def poster_url(path: str | None) -> str | None:

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from akwarr.api.admin import create_admin_router
 from akwarr.api.auth import verify_api_key
@@ -83,6 +83,20 @@ class SeriesAddBody(BaseModel):
     year: int | None = None
     originalTitle: str | None = None
     overview: str | None = None
+
+    @field_validator("seasons", mode="before")
+    @classmethod
+    def _coerce_jellyseerr_seasons(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        values = value if isinstance(value, list) else [value]
+        coerced: list[Any] = []
+        for item in values:
+            if isinstance(item, int):
+                coerced.append({"seasonNumber": item, "monitored": True})
+            else:
+                coerced.append(item)
+        return coerced
 
 
 class CommandBody(BaseModel):
@@ -332,6 +346,7 @@ async def get_queue(
 async def _series_payload(series: dict[str, Any]) -> dict[str, Any]:
     episodes = await _get_store().list_episodes(series["id"])
     has_file = any(e.get("has_file") for e in episodes)
+    seasons = _series_season_payloads(episodes)
     return {
         "id": series["id"],
         "title": series["title"],
@@ -340,7 +355,8 @@ async def _series_payload(series: dict[str, Any]) -> dict[str, Any]:
         "status": "continuing",
         "overview": series.get("overview") or "",
         "year": series.get("year"),
-        "seasonCount": max((e["season_number"] for e in episodes), default=1),
+        "seasonCount": len(seasons),
+        "seasons": seasons,
         "hasFile": has_file,
         "monitored": series.get("monitored", True),
         "tmdbId": series["tmdb_id"],
@@ -356,6 +372,32 @@ async def _series_payload(series: dict[str, Any]) -> dict[str, Any]:
             "episodeFileCount": sum(1 for e in episodes if e.get("has_file")),
         },
     }
+
+
+def _series_season_payloads(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    season_numbers = sorted({int(e["season_number"]) for e in episodes if e.get("season_number")})
+    if not season_numbers:
+        season_numbers = [1]
+    payloads: list[dict[str, Any]] = []
+    for season_number in season_numbers:
+        season_episodes = [e for e in episodes if int(e.get("season_number") or 0) == season_number]
+        episode_count = len(season_episodes)
+        episode_file_count = sum(1 for e in season_episodes if e.get("has_file"))
+        percent = round((episode_file_count / episode_count) * 100, 2) if episode_count else 0
+        payloads.append(
+            {
+                "seasonNumber": season_number,
+                "monitored": True,
+                "statistics": {
+                    "episodeFileCount": episode_file_count,
+                    "episodeCount": episode_count,
+                    "totalEpisodeCount": episode_count,
+                    "sizeOnDisk": 0,
+                    "percentOfEpisodes": percent,
+                },
+            }
+        )
+    return payloads
 
 
 def _episode_payload(episode: dict[str, Any]) -> dict[str, Any]:

@@ -91,6 +91,22 @@ async def test_sonarr_tag_endpoint_is_jellyseerr_compatible() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sonarr_rootfolder_returns_arabic_series_path() -> None:
+    transport = ASGITransport(app=sonarr_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/v3/rootfolder")
+
+    assert r.status_code == 200
+    folders = r.json()
+    assert len(folders) == 1
+    assert folders[0]["id"] == 1
+    assert folders[0]["path"] == "/media/Serries/Arabic"
+    assert isinstance(folders[0]["accessible"], bool)
+    assert folders[0]["freeSpace"] == 0
+    assert folders[0]["unmappedFolders"] == []
+
+
+@pytest.mark.asyncio
 async def test_tmdb_lookup_tv_resolves_tvdb_id(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {"calls": []}
 
@@ -116,16 +132,20 @@ async def test_tmdb_lookup_tv_resolves_tvdb_id(monkeypatch: pytest.MonkeyPatch) 
 
         async def get(self, url, *, params):
             captured["calls"].append((url, params))
-            if url.endswith("/find/431975"):
-                return FakeResponse({"tv_results": [{"id": 249826}]})
+            if url.endswith("/find/473659"):
+                return FakeResponse({"tv_results": [{"id": 301326}]})
             return FakeResponse(
                 {
-                    "id": 249826,
-                    "name": "Baba Almgal",
-                    "original_name": "بابا المجال",
-                    "first_air_date": "2023-03-23",
+                    "id": 301326,
+                    "name": "رأس الأفعى",
+                    "original_name": "رأس الأفعى",
+                    "first_air_date": "2026-02-17",
                     "overview": "Arabic series",
-                    "external_ids": {"imdb_id": "tt32006014", "tvdb_id": 431975},
+                    "external_ids": {"imdb_id": "tt37323221", "tvdb_id": 473659},
+                    "seasons": [
+                        {"season_number": 0, "episode_count": 1},
+                        {"season_number": 1, "episode_count": 30},
+                    ],
                 }
             )
 
@@ -133,18 +153,32 @@ async def test_tmdb_lookup_tv_resolves_tvdb_id(monkeypatch: pytest.MonkeyPatch) 
     get_settings.cache_clear()
     monkeypatch.setattr(tmdb_module.httpx, "AsyncClient", FakeAsyncClient)
 
-    results = await tmdb_module.TMDBClient(get_settings()).lookup_tv("tvdb:431975")
+    results = await tmdb_module.TMDBClient(get_settings()).lookup_tv("tvdb:473659")
 
     first_url, first_params = captured["calls"][0]
     second_url, second_params = captured["calls"][1]
-    assert first_url.endswith("/find/431975")
+    assert first_url.endswith("/find/473659")
     assert first_params["external_source"] == "tvdb_id"
-    assert second_url.endswith("/tv/249826")
+    assert second_url.endswith("/tv/301326")
     assert second_params["append_to_response"] == "external_ids"
-    assert results[0]["tmdbId"] == 249826
-    assert results[0]["tvdbId"] == 431975
-    assert results[0]["imdbId"] == "tt32006014"
-    assert results[0]["title"] == "Baba Almgal"
+    assert results[0]["tmdbId"] == 301326
+    assert results[0]["tvdbId"] == 473659
+    assert results[0]["imdbId"] == "tt37323221"
+    assert results[0]["title"] == "رأس الأفعى"
+    assert results[0]["seasonCount"] == 1
+    assert results[0]["seasons"] == [
+        {
+            "seasonNumber": 1,
+            "monitored": True,
+            "statistics": {
+                "episodeFileCount": 0,
+                "episodeCount": 30,
+                "totalEpisodeCount": 30,
+                "sizeOnDisk": 0,
+                "percentOfEpisodes": 0,
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -670,7 +704,7 @@ async def test_sonarr_add_series_uses_elcinema_arabic_candidates(
 
 
 @pytest.mark.asyncio
-async def test_sonarr_add_series_accepts_jellyseerr_tvdb_payload(
+async def test_sonarr_add_series_accepts_jellyseerr_arabic_tvdb_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -691,10 +725,10 @@ async def test_sonarr_add_series_accepts_jellyseerr_tvdb_payload(
         async def tv_from_tvdb(self, tvdb_id):
             captured["tvdb_id"] = tvdb_id
             return {
-                "id": 249826,
-                "title": "Baba Almgal",
-                "original_title": "بابا المجال",
-                "year": 2023,
+                "id": 301326,
+                "title": "رأس الأفعى",
+                "original_title": "رأس الأفعى",
+                "year": 2026,
                 "overview": "",
                 "poster_path": None,
                 "backdrop_path": None,
@@ -728,24 +762,31 @@ async def test_sonarr_add_series_accepts_jellyseerr_tvdb_payload(
 
     body = sonarr.SeriesAddBody.model_validate(
         {
-            "title": "Baba Almgal",
-            "tvdbid": 431975,
+            "title": "رأس الأفعى",
+            "tvdbid": 473659,
             "profileId": 6,
             "rootFolderPath": "/data/Serries/English",
+            "seasons": [1],
             "searchNow": False,
             "tags": [1, 7, 6],
         }
     )
 
+    assert body.seasons[0].seasonNumber == 1
+    assert body.seasons[0].monitored is True
+
     payload = await sonarr.add_series(body)
 
-    assert captured["tvdb_id"] == 431975
-    assert captured["series"]["tmdb_id"] == 249826
-    assert captured["series"]["tvdb_id"] == 431975
+    assert captured["tvdb_id"] == 473659
+    assert captured["series"]["tmdb_id"] == 301326
+    assert captured["series"]["tvdb_id"] == 473659
+    assert captured["series"]["title"] == "رأس الأفعى"
     assert captured["series"]["quality_profile_id"] == 6
     assert captured["series"]["root_folder_path"] == str(series_root)
-    assert payload["tmdbId"] == 249826
+    assert payload["tmdbId"] == 301326
     assert payload["rootFolderPath"] == str(series_root)
+    assert payload["seasonCount"] == 1
+    assert payload["seasons"][0]["seasonNumber"] == 1
 
 
 @pytest.mark.asyncio

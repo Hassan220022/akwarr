@@ -200,6 +200,8 @@ curl -sH "X-Api-Key: $JELLYSEERR_API_KEY" \
 
 More detail: [JELLYSEERR.md](./JELLYSEERR.md).
 
+Compatibility note: Jellyseerr expects Sonarr lookup/list responses to include a `seasons` array and may post selected seasons as plain integers such as `seasons: [1]`. Akwarr's Sonarr shim must preserve both behaviors for Arabic series requests; otherwise Jellyseerr can fail before it sends `POST /api/v3/series`.
+
 ---
 
 ## 7. Jellyfin configuration
@@ -434,6 +436,7 @@ External route:
 | Codex stream disconnect 403               | Cursor proxy blocks chatgpt.com   | Run `codex exec` outside Cursor                                                        |
 | Download never starts                     | FlareSolverr / Akwam scrape fail  | `docker logs akwarr-radarr`, `docker logs flaresolverr`                                |
 | Download resolver returns Akwam shortener | Shortener page changed            | Check `a.download-link` / `/download/` extraction in `akwarr/scraper/akwam.py`          |
+| Arabic series fails before Akwarr creates jobs | Sonarr lookup contract mismatch | Check Jellyseerr logs for `Cannot read properties of undefined (reading 'map')`; verify `/api/v3/series/lookup?term=tvdb:<id>` includes `seasons` |
 | aria2 returns 400 Unauthorized            | RPC token mismatch                | Ensure `ARIA2_SECRET=P3TERX` in `/opt/akwarr/.env` and shim containers                  |
 | File on disk, Jellyfin empty              | Wrong library path or permissions | Verify `/cc/Movie/Arabic` and `/cc/Serries/Arabic`; `chown -R 1000:1000 /media/Movie/Arabic /media/Serries/Arabic` |
 | Jellyseerr stuck Processing               | No TMDB match or worker stuck     | Check TMDB id; restart `akwarr-radarr`                                                 |
