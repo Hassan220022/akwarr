@@ -16,6 +16,7 @@ Jellyseerr  →  Akwarr (Radarr/Sonarr API)  →  Akwam + FlareSolverr + aria2
 
 - **Jellyseerr-native requests** — add Akwarr as extra Radarr/Sonarr servers; users pick Arabic in Advanced Requests
 - **TMDB + IMDb + ElCinema metadata** — Jellyfin NFO sidecars include TMDB, IMDb, and ElCinema IDs when available
+- **TVDB-to-TMDB fallback** — Sonarr-style Jellyseerr TV requests can resolve through TheTVDB's public TMDB link when TMDB's external-ID lookup misses
 - **Arabic-first Akwam matching** — converts Jellyseerr/TMDB English titles into Arabic search candidates with ElCinema, then searches Akwam with Arabic candidates only when any Arabic title is available
 - **Akwam artwork fallback** — saves `poster.jpg` / `fanart.jpg` from Akwam when useful
 - **Jellyfin-friendly layout** — standard movie folders and `Season XX/SxxExx` episode naming
@@ -79,6 +80,20 @@ On CT113 (Jellyfin): `/cc/Movie/Arabic` and `/cc/Serries/Arabic` (same ZFS pool)
 
 4. Optional **Override Rule**: if `original_language` is `ar` → route to Arabic Radarr/Sonarr.
 
+### Jellyseerr failed-series lookup notes
+
+Jellyseerr may send Sonarr requests by TVDB ID, for example `tvdb:477454` for `Ward Ala Foll Wa Yasmeen (2026)`. If TMDB's external-ID lookup has no TV result for that TVDB ID, Akwarr falls back to TheTVDB's public series page and follows the linked TMDB series before returning the Sonarr-compatible lookup payload. The known mapping for this case is:
+
+| Jellyseerr / TVDB | TMDB | Akwam |
+| ----------------- | ---- | ----- |
+| `tvdb:477454` / `Ward Ala Foll Wa Yasmeen (2026)` | `tmdb:299988` / `ورد على فل وياسمين` | `https://akwam.it/series/5658/ورد-على-فل-وياسمين` |
+
+Live probe from CT107:
+
+```bash
+ssh media 'set -a; . /opt/akwarr/.env; set +a; curl -G -H "X-Api-Key: $AKWARR_API_KEY" --data-urlencode "term=tvdb:477454" http://127.0.0.1:8990/api/v3/series/lookup'
+```
+
 ## Admin monitor
 
 Akwarr exposes an API-key protected monitor on both shim containers:
@@ -87,7 +102,7 @@ Akwarr exposes an API-key protected monitor on both shim containers:
 - Sonarr mode: `http://<host>:8990/ui?apikey=<AKWARR_API_KEY>`
 - LAN-only homelab URL: `https://akwam.mikawi.org/ui`
 
-The monitor shows ElCinema Arabic title candidates, Akwam search results, metadata/download links, recent jobs, failed errors, active download percent/speed/ETA, and imported files under `/media/Movie/Arabic` and `/media/Serries/Arabic`. Active downloads can be paused, resumed, or deleted from the jobs table.
+The monitor shows ElCinema Arabic title candidates, Akwam search results, metadata/download links, recent jobs, failed errors, active download percent/speed/ETA, and imported files under `/media/Movie/Arabic` and `/media/Serries/Arabic`. After loading exact Akwam series metadata, the monitor can queue all episodes or only checked episodes directly into the download jobs table. Active downloads can be paused, resumed, or deleted from the jobs table.
 
 The Akwarr API is also available on the same LAN-only host without a query API key, for example `https://akwam.mikawi.org/api/v3/system/status`. The LAN proxy injects `X-Api-Key`; direct container access still requires the normal key.
 

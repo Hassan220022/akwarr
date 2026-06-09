@@ -398,11 +398,13 @@ Use it to check:
 - Akwam movie/series search results
 - ElCinema Arabic title bridge for English Jellyseerr/TMDB names
 - Akwam metadata, download links, and episode lists
+- direct Akwam series episode queueing: load metadata, then use `Download all episodes` or checked `Download selected`
 - direct link resolution failures
 - recent jobs, errors, active download percent, speed, and ETA
 - pause, resume, and delete/cancel controls for active downloads
 - imported files under `/media/Movie/Arabic` and `/media/Serries/Arabic`
 - Jellyseerr-facing download ETA through `/api/v3/queue` on the Radarr/Sonarr shims; include both `timeleft` and future `estimatedCompletionTime`
+- Sonarr TVDB lookup misses: probe `/api/v3/series/lookup?term=tvdb:<id>`; Akwarr falls back to TheTVDB's public TMDB link before returning a Jellyseerr-compatible series payload
 
 Live CLI probes:
 

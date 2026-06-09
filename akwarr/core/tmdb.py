@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
 
 from akwarr.config import Settings
+
+TVDB_TMDB_RE = re.compile(r"themoviedb\.org/tv/(\d+)")
 
 
 class TMDBClient:
@@ -123,12 +126,26 @@ class TMDBClient:
             )
             r.raise_for_status()
             results = r.json().get("tv_results", [])
-            if not results:
+            tmdb_id = int(results[0]["id"]) if results else await self._tmdb_id_from_tvdb_page(client, tvdb_id)
+            if tmdb_id is None:
                 return None
-            data = results[0]
-        data = await self.tv(int(data["id"]))
+        data = await self.tv(tmdb_id)
         data["tvdb_id"] = tvdb_id
         return data
+
+    async def _tmdb_id_from_tvdb_page(self, client: httpx.AsyncClient, tvdb_id: int) -> int | None:
+        try:
+            r = await client.get(
+                "https://thetvdb.com/",
+                params={"id": tvdb_id, "tab": "series"},
+                headers={"User-Agent": "Akwarr/0.1"},
+                follow_redirects=True,
+            )
+            r.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        match = TVDB_TMDB_RE.search(r.text)
+        return int(match.group(1)) if match else None
 
     def _movie_lookup_payload(self, data: dict[str, Any]) -> dict[str, Any]:
         year = data.get("year")

@@ -183,6 +183,72 @@ async def test_tmdb_lookup_tv_resolves_tvdb_id(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_tmdb_lookup_tv_falls_back_to_thetvdb_tmdb_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {"calls": []}
+
+    class FakeResponse:
+        def __init__(self, payload=None, text=""):
+            self.payload = payload
+            self.text = text
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return self.payload
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, *, params=None, headers=None, follow_redirects=False):
+            captured["calls"].append((url, params, headers, follow_redirects))
+            if url.endswith("/find/477454"):
+                return FakeResponse({"tv_results": []})
+            if url.startswith("https://thetvdb.com/"):
+                return FakeResponse(
+                    text='<a href="https://www.themoviedb.org/tv/299988">TheMovieDB.com</a>'
+                )
+            return FakeResponse(
+                {
+                    "id": 299988,
+                    "name": "ورد على فل وياسمين",
+                    "original_name": "ورد على فل وياسمين",
+                    "first_air_date": "2026-05-31",
+                    "overview": "Arabic series",
+                    "external_ids": {"imdb_id": None, "tvdb_id": None},
+                    "seasons": [{"season_number": 1, "episode_count": 15}],
+                }
+            )
+
+    monkeypatch.setenv("TMDB_API_KEY", "tmdb-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(tmdb_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    results = await tmdb_module.TMDBClient(get_settings()).lookup_tv("tvdb:477454")
+
+    assert [call[0] for call in captured["calls"]] == [
+        "https://api.themoviedb.org/3/find/477454",
+        "https://thetvdb.com/",
+        "https://api.themoviedb.org/3/tv/299988",
+    ]
+    assert captured["calls"][1][1] == {"id": 477454, "tab": "series"}
+    assert captured["calls"][1][3] is True
+    assert results[0]["tmdbId"] == 299988
+    assert results[0]["tvdbId"] == 477454
+    assert results[0]["title"] == "ورد على فل وياسمين"
+    assert results[0]["seasons"][0]["statistics"]["episodeCount"] == 15
+
+
+@pytest.mark.asyncio
 async def test_radarr_accepts_jellyseerr_query_api_key_and_camel_quality_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1062,3 +1128,87 @@ async def test_monitor_ui_includes_download_control_buttons(monkeypatch: pytest.
     assert "function jobCard" in response.text
     assert 'data-filter="downloading"' in response.text
     assert "No jobs for this filter." in response.text
+
+
+@pytest.mark.asyncio
+async def test_akwam_series_download_endpoint_queues_selected_episodes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {"episodes": [], "jobs": []}
+
+    class FakeStore:
+        def __init__(self):
+            self.next_episode_id = 1
+
+        async def add_series(self, data):
+            captured["series"] = data
+            return {"id": 42, "path": None, "added": None, **data}
+
+        async def upsert_episode(self, data):
+            episode = {"id": self.next_episode_id, "path": None, **data}
+            self.next_episode_id += 1
+            captured["episodes"].append(episode)
+            return episode
+
+        async def create_job(self, kind, ref_id, dest_path):
+            captured["jobs"].append((kind, ref_id, dest_path))
+            return len(captured["jobs"])
+
+    series_root = tmp_path / "Serries" / "Arabic"
+    monkeypatch.setenv("AKWARR_API_KEY", "secret")
+    monkeypatch.setenv("SERIES_PATH", str(series_root))
+    get_settings.cache_clear()
+    monkeypatch.setattr(radarr, "store", FakeStore())
+
+    transport = ASGITransport(app=radarr_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v3/akwam/series/download?apikey=secret",
+            json={
+                "title": "ورد على فل وياسمين",
+                "url": "https://akwam.it/series/5658/ورد-على-فل-وياسمين",
+                "episodes": [
+                    {
+                        "season": 1,
+                        "number": 1,
+                        "title": "حلقة 1",
+                        "url": "https://akwam.it/episode/101208/ورد-على-فل-وياسمين/الحلقة-1",
+                    },
+                    {
+                        "season": 1,
+                        "number": 3,
+                        "title": "حلقة 3",
+                        "url": "https://akwam.it/episode/101275/ورد-على-فل-وياسمين/الحلقة-3",
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["queued"] == 2
+    assert data["seriesId"] == 42
+    assert captured["series"]["tmdb_id"] < 0
+    assert captured["series"]["akwam_url"] == "https://akwam.it/series/5658/ورد-على-فل-وياسمين"
+    assert [episode["episode_number"] for episode in captured["episodes"]] == [1, 3]
+    assert [job[0] for job in captured["jobs"]] == ["episode", "episode"]
+    assert all(str(series_root) in job[2] for job in captured["jobs"])
+
+
+@pytest.mark.asyncio
+async def test_monitor_ui_includes_series_episode_download_controls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKWARR_API_KEY", "secret")
+    get_settings.cache_clear()
+
+    transport = ASGITransport(app=radarr_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/ui?apikey=secret")
+
+    assert response.status_code == 200
+    assert "/api/v3/akwam/series/download" in response.text
+    assert "Download all episodes" in response.text
+    assert "Download selected" in response.text
+    assert "episodeSelect" in response.text

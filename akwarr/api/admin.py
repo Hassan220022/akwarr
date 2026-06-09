@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -12,16 +13,32 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
 from akwarr.api.auth import verify_api_key
 from akwarr.config import get_settings
 from akwarr.core.store import JobStatus, Store
 from akwarr.download.aria2 import Aria2Client
+from akwarr.library.organizer import MediaOrganizer
 from akwarr.scraper.akwam import AkwamMetadata, AkwamScraper
 from akwarr.scraper.elcinema import ElCinemaScraper
 
 VIDEO_SUFFIXES = {".mkv", ".mp4", ".avi", ".mov", ".wmv"}
 SIDE_CAR_SUFFIXES = {".nfo", ".jpg", ".jpeg", ".png", ".webp"}
+
+
+class AkwamEpisodeDownloadSelection(BaseModel):
+    season: int | None = Field(default=None, ge=0)
+    number: int = Field(ge=1)
+    title: str | None = None
+    url: str = Field(min_length=1)
+
+
+class AkwamSeriesDownloadBody(BaseModel):
+    title: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    year: int | None = None
+    episodes: list[AkwamEpisodeDownloadSelection] = Field(min_length=1)
 
 
 def create_admin_router(get_store: Callable[[], Store]) -> APIRouter:
@@ -141,6 +158,83 @@ def create_admin_router(get_store: Callable[[], Store]) -> APIRouter:
         scraper = AkwamScraper(settings)
         metadata = await scraper.fetch_metadata(url, kind=kind)
         return _metadata_payload(metadata)
+
+    @router.post("/api/v3/akwam/series/download")
+    async def akwam_series_download(body: AkwamSeriesDownloadBody) -> dict[str, Any]:
+        settings = get_settings()
+        _validate_akwam_url(body.url, settings.akwam_base)
+        for episode in body.episodes:
+            _validate_akwam_url(episode.url, settings.akwam_base)
+
+        store = get_store()
+        organizer = MediaOrganizer(settings)
+        series = await store.add_series(
+            {
+                "tmdb_id": _synthetic_tmdb_id(body.url),
+                "tvdb_id": 0,
+                "title": body.title,
+                "original_title": body.title,
+                "year": body.year,
+                "overview": None,
+                "poster_url": None,
+                "fanart_url": None,
+                "akwam_url": body.url,
+                "path": str(organizer.series_folder(title=body.title, year=body.year)),
+                "monitored": True,
+                "season_folder": True,
+                "quality_profile_id": 1,
+                "language_profile_id": 1,
+                "root_folder_path": str(settings.series_path),
+                "metadata": {"source": "akwam", "source_url": body.url},
+            }
+        )
+
+        queued: list[dict[str, Any]] = []
+        seen: set[tuple[int, int]] = set()
+        for episode in body.episodes:
+            season = episode.season or 1
+            key = (season, episode.number)
+            if key in seen:
+                continue
+            seen.add(key)
+            ep_record = await store.upsert_episode(
+                {
+                    "series_id": series["id"],
+                    "season_number": season,
+                    "episode_number": episode.number,
+                    "title": episode.title,
+                    "akwam_url": episode.url,
+                    "monitored": True,
+                    "has_file": False,
+                }
+            )
+            plan = organizer.episode_plan(
+                series_title=body.title,
+                year=body.year,
+                season=season,
+                episode=episode.number,
+                episode_title=episode.title,
+                quality="720p",
+            )
+            job_id = await store.create_job("episode", ep_record["id"], str(plan.video))
+            queued.append(
+                {
+                    "jobId": job_id,
+                    "episodeId": ep_record["id"],
+                    "season": season,
+                    "number": episode.number,
+                    "title": episode.title,
+                    "destination": str(plan.video),
+                }
+            )
+
+        return {
+            "seriesId": series["id"],
+            "title": series["title"],
+            "requested": len(body.episodes),
+            "queued": len(queued),
+            "episodes": queued,
+        }
 
     @router.get("/api/v3/akwam/resolve")
     async def akwam_resolve(linkUrl: str = Query(..., min_length=1)) -> dict[str, str]:
@@ -304,6 +398,12 @@ def _validate_akwam_url(url: str, base_url: str) -> None:
     allowed_host = host == base_host or host.endswith(f".{base_host}")
     if parsed.scheme not in {"http", "https"} or not allowed_host:
         raise HTTPException(status_code=400, detail="URL must be on configured Akwam host")
+
+
+def _synthetic_tmdb_id(url: str) -> int:
+    digest = hashlib.blake2s(url.encode("utf-8"), digest_size=4).digest()
+    value = int.from_bytes(digest, "big") % 2_000_000_000
+    return -(value or 1)
 
 
 def _metadata_payload(metadata: AkwamMetadata) -> dict[str, Any]:
@@ -587,6 +687,30 @@ ADMIN_HTML = r"""<!doctype html>
     .actions button:disabled {
       cursor: not-allowed;
       opacity: .45;
+    }
+    .series-download-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .series-download-actions button {
+      min-width: 148px;
+      padding: 0 12px;
+    }
+    .episode-select {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 8px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .episode-select input {
+      width: auto;
+      height: auto;
+      accent-color: var(--green);
     }
     .job-card {
       border: 1px solid var(--line);
@@ -984,6 +1108,18 @@ ADMIN_HTML = r"""<!doctype html>
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       return response.json();
     }
+    async function postJson(path, payload) {
+      const response = await fetch(endpoint(path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`${response.status} ${response.statusText}${detail ? `: ${detail.slice(0, 180)}` : ''}`);
+      }
+      return response.json();
+    }
     async function pauseJob(id) {
       await command(`/api/v3/monitor/jobs/${id}/pause`);
       await refresh();
@@ -1065,14 +1201,68 @@ ADMIN_HTML = r"""<!doctype html>
       const downloads = data.downloads.map(download =>
         item(download.quality, `<code>${text(download.link_url)}</code><div>${text(download.size || '')}</div><div class="row" style="margin-top:8px"><button class="resolveBtn" data-url="${text(download.link_url)}">Resolve</button></div>`, 'download')
       ).join('');
-      const episodes = data.episodes.map(ep =>
-        item(`S${String(ep.season || 1).padStart(2, '0')}E${String(ep.number).padStart(2, '0')}`, `<code>${text(ep.url)}</code><div>${text(ep.title)}</div>`, 'episode')
+      const seriesDownload = kind === 'series' && data.episodes.length ? renderSeriesDownloadControls(data) : '';
+      const episodes = data.episodes.map((ep, index) =>
+        item(
+          `S${String(ep.season || 1).padStart(2, '0')}E${String(ep.number).padStart(2, '0')}`,
+          `<code>${text(ep.url)}</code><div>${text(ep.title)}</div><label class="episode-select"><input class="episodeSelect" type="checkbox" data-index="${index}" checked> Select episode</label>`,
+          'episode'
+        )
       ).join('');
       document.querySelector('#metadata').innerHTML =
-        item(data.title, `<code>${text(data.url)}</code><div>${text(data.overview || '')}</div>`, data.kind) + downloads + episodes;
+        seriesDownload + item(data.title, `<code>${text(data.url)}</code><div>${text(data.overview || '')}</div>`, data.kind) + downloads + episodes;
       document.querySelectorAll('.resolveBtn').forEach(button => {
         button.addEventListener('click', () => resolve(button.dataset.url));
       });
+      document.querySelector('#downloadAllEpisodes')?.addEventListener('click', () => {
+        queueSeriesEpisodes(data, data.episodes.map(episodePayload));
+      });
+      document.querySelector('#downloadSelectedEpisodes')?.addEventListener('click', () => {
+        const selected = [...document.querySelectorAll('.episodeSelect:checked')]
+          .map(input => data.episodes[Number(input.dataset.index)])
+          .filter(Boolean)
+          .map(episodePayload);
+        queueSeriesEpisodes(data, selected);
+      });
+    }
+    function renderSeriesDownloadControls(data) {
+      return item('Download series', `
+        <div>${text(data.episodes.length)} episodes found from Akwam metadata.</div>
+        <div class="series-download-actions">
+          <button id="downloadAllEpisodes" type="button">Download all episodes</button>
+          <button id="downloadSelectedEpisodes" type="button">Download selected</button>
+        </div>
+        <div id="seriesDownloadStatus" style="margin-top:10px"></div>
+      `, 'download');
+    }
+    function episodePayload(ep) {
+      return {
+        season: Number(ep.season || 1),
+        number: Number(ep.number),
+        title: ep.title || '',
+        url: ep.url
+      };
+    }
+    async function queueSeriesEpisodes(metadata, episodes) {
+      const status = document.querySelector('#seriesDownloadStatus');
+      if (!episodes.length) {
+        status.innerHTML = item('No episodes selected', 'Select at least one episode first.', 'failed');
+        return;
+      }
+      status.innerHTML = item('Queueing episodes', `${episodes.length} episode jobs requested.`, 'pending');
+      try {
+        const data = await postJson('/api/v3/akwam/series/download', {
+          title: metadata.title,
+          url: metadata.url,
+          year: metadata.year,
+          episodes
+        });
+        status.innerHTML = item('Queued series download', `${data.queued} of ${data.requested} episode jobs ready.`, 'ok');
+        await refresh();
+        showTab('downloads');
+      } catch (error) {
+        status.innerHTML = item('Series download failed', text(error.message), 'failed');
+      }
     }
     async function resolve(url) {
       const box = document.querySelector('#resolved');
