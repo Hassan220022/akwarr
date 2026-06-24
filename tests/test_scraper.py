@@ -137,22 +137,36 @@ class FakeEpisodeDownloadFetcher:
             <html>
               <body>
                 <h1>حلقة 1 : مسلسل رأس الأفعى 1</h1>
-                <div class="tab-content quality">
-                  <a href="/link/episode-720">تحميل 720p</a>
+                <ul class="header-tabs tabs">
+                  <li><a href="#tab-4" class="selected">720p</a></li>
+                </ul>
+                <div class="tab-content quality" id="tab-4">
+                  <div class="qualities row">
+                    <div class="col-lg-6 row" data-server="22" data-quality="4">
+                      <div class="col-lg-6 col">
+                        <a href="/watch/173702/93879/series/الحلقة-1"
+                           class="link-btn link-show">مشاهدة</a>
+                      </div>
+                      <div class="col-lg-6 col">
+                        <a href="/download/173702/93879/series/الحلقة-1"
+                           class="link-btn link-download">
+                          <span class="text">تحميل</span>
+                          <span>720p</span>
+                        </a>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </body>
             </html>
             """
             return FetchResponse(text=html, status_code=200, url=target_url)
-        if "/link/" in target_url:
-            html = """
-            <html>
-              <body>
-                <a class="download-link" href="/download/episode-720">Click here to go for your link ...</a>
-              </body>
-            </html>
-            """
-            return FetchResponse(text=html, status_code=200, url=target_url)
+        if "/download/" in target_url:
+            return FetchResponse(
+                text="https://cdn.example.test/series/s01e01.mp4",
+                status_code=200,
+                url=target_url,
+            )
         if "cdn.example.test" in target_url:
             raise AssertionError("direct media URL should not be fetched by Akwarr")
         return FetchResponse(
@@ -293,8 +307,7 @@ async def test_episode_download_url_fetches_episode_download_and_resolves_direct
     assert direct == "https://cdn.example.test/series/s01e01.mp4"
     assert fetcher.urls == [
         "https://akwam.it/episode/93879/رأس-الأفعى/الحلقة-1",
-        "https://akwam.it/link/episode-720",
-        "https://akwam.it/download/episode-720",
+        "https://akwam.it/download/173702/93879/series/الحلقة-1",
     ]
 
 
@@ -315,3 +328,111 @@ async def test_resolve_direct_url_returns_direct_media_url_without_fetching_it(t
 
     assert direct == "https://cdn.example.test/direct/movie.mp4"
     assert fetcher.urls == []
+
+
+@pytest.mark.asyncio
+async def test_flaresolverr_auto_falls_through_on_dns_error(tmp_path: Path) -> None:
+    """When auto mode direct fetch fails with a network error, fall through to FlareSolverr."""
+    from unittest.mock import AsyncMock, patch
+
+    import httpx
+
+    from akwarr.scraper.flaresolverr import FetchResponse, FlareSolverrClient
+
+    settings = Settings(
+        mode="radarr",
+        movies_path=tmp_path / "movies",
+        series_path=tmp_path / "series",
+        staging_path=tmp_path / "staging",
+        data_path=tmp_path / "config",
+    )
+    client = FlareSolverrClient(settings)
+    client.enabled = True
+    client.auto = True
+
+    flaresolverr_response = FetchResponse(
+        text="<html><body>real content</body></html>",
+        status_code=200,
+        url="https://akwam.it/test",
+    )
+
+    with (
+        patch.object(
+            client,
+            "_direct_get",
+            new=AsyncMock(side_effect=httpx.ConnectError("[Errno -3] Temporary failure in name resolution")),
+        ),
+        patch.object(
+            client,
+            "_flaresolverr_get",
+            new=AsyncMock(return_value=flaresolverr_response),
+        ),
+    ):
+        result = await client.get("https://akwam.it/test")
+
+    assert result.text == "<html><body>real content</body></html>"
+    assert result.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_extract_downloads_handles_new_akwam_download_structure(tmp_path: Path) -> None:
+    """Verify _extract_downloads finds /download/ links in the new akwam HTML structure."""
+    settings = Settings(
+        mode="sonarr",
+        movies_path=tmp_path / "movies",
+        series_path=tmp_path / "series",
+        staging_path=tmp_path / "staging",
+        data_path=tmp_path / "config",
+    )
+    scraper = AkwamScraper(settings)
+    html = """
+    <html>
+      <body>
+        <ul class="header-tabs tabs">
+          <li><a href="#tab-4" class="selected">720p</a></li>
+          <li><a href="#tab-5">1080p</a></li>
+        </ul>
+        <div class="tab-content quality" id="tab-4">
+          <div class="qualities row">
+            <div class="col-lg-6 row" data-server="22" data-quality="4">
+              <div class="col-lg-6 col">
+                <a href="/watch/173702/95801/series/ep-1" class="link-btn link-show">مشاهدة</a>
+              </div>
+              <div class="col-lg-6 col">
+                <a href="/download/173702/95801/series/ep-1" class="link-btn link-download">
+                  <span class="text">تحميل</span>
+                  <span>290.0 MB</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="tab-content quality" id="tab-5">
+          <div class="qualities row">
+            <div class="col-lg-6 row" data-server="23" data-quality="5">
+              <div class="col-lg-6 col">
+                <a href="/watch/173703/95801/series/ep-1" class="link-btn link-show">مشاهدة</a>
+              </div>
+              <div class="col-lg-6 col">
+                <a href="/download/173703/95801/series/ep-1" class="link-btn link-download">
+                  <span class="text">تحميل</span>
+                  <span>580.0 MB</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    downloads = await scraper._extract_downloads(html, "https://akwam.it/episode/95801/test")
+
+    assert len(downloads) == 2
+    assert downloads[0].quality == "720p"
+    assert downloads[0].size == "290.0 MB"
+    assert "/download/173702/95801" in downloads[0].link_url
+    assert downloads[1].quality == "1080p"
+    assert downloads[1].size == "580.0 MB"
+    assert "/download/173703/95801" in downloads[1].link_url
+    # link-show (watch) links must NOT be included
+    assert all("/watch/" not in d.link_url for d in downloads)

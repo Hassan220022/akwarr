@@ -14,9 +14,10 @@ from akwarr.config import Settings
 from akwarr.scraper.flaresolverr import FlareSolverrClient
 
 RGX_QUALITY_LINK = re.compile(
-    r'tab-content quality.*?a href="(https?://[^"]+/link/\d+)"',
+    r'tab-content quality.*?a href="(https?://[^"]+/(?:link|download)/\d+[^"]*)"',
     re.DOTALL | re.IGNORECASE,
 )
+RGX_TAB_BUTTON = re.compile(r"#(tab-\d+)$")
 RGX_EPISODE_NUM = re.compile(r"(?:الحلقة|حلقة)\s*([\d٠-٩]+)")
 RGX_SEASON_NUM = re.compile(r"(?:الموسم|موسم|الجزء|جزء)\s*([\d٠-٩]+|[\w\s]+?)\s+(?:الحلقة|حلقة)")
 ARABIC_ORDINALS = {
@@ -301,20 +302,58 @@ class AkwamScraper:
         downloads: list[AkwamDownload] = []
         soup = BeautifulSoup(html, "lxml")
 
+        # Map tab ids to quality labels from tab buttons: <a href="#tab-N">720p</a>
+        quality_labels: dict[str, str] = {}
+        for a in soup.find_all("a", href=True):
+            m = RGX_TAB_BUTTON.match(a["href"])
+            if m:
+                label = a.get_text(strip=True)
+                if label:
+                    quality_labels[m.group(1)] = label
+
         for block in soup.select("div.tab-content.quality, div.quality-tab"):
-            for a in block.find_all("a", href=True):
-                href = a["href"]
-                if "/link/" not in href:
+            block_id = block.get("id", "")
+            default_quality = quality_labels.get(block_id, "")
+
+            # New structure: rows with data-quality, containing a.link-download
+            rows = block.select("div[data-quality]")
+            for row in rows:
+                dl_link = row.select_one("a.link-download")
+                if not dl_link or not dl_link.get("href"):
                     continue
-                label = a.get_text(strip=True) or "unknown"
-                size_el = a.find_next(string=re.compile(r"GB|MB"))
+                href = dl_link["href"]
+                if "/download/" not in href and "/link/" not in href:
+                    continue
+                label = default_quality or row.get("data-quality", "") or "unknown"
+                size_text = ""
+                for span in dl_link.find_all("span"):
+                    t = span.get_text(strip=True)
+                    if re.search(r"GB|MB", t, re.I):
+                        size_text = t
+                        break
                 downloads.append(
                     AkwamDownload(
                         quality=_normalize_quality(label),
-                        size=size_el.strip() if size_el else None,
+                        size=size_text or None,
                         link_url=urljoin(page_url, href),
                     )
                 )
+
+            # Old structure: direct <a> with /link/ in href (backward compat)
+            if not rows:
+                for a in block.find_all("a", href=True):
+                    href = a["href"]
+                    if "/link/" not in href:
+                        continue
+                    label = a.get_text(strip=True) or default_quality or "unknown"
+                    size_el = a.find_next(string=re.compile(r"GB|MB"))
+                    downloads.append(
+                        AkwamDownload(
+                            quality=_normalize_quality(label),
+                            size=size_el.strip() if size_el else None,
+                            link_url=urljoin(page_url, href),
+                        )
+                    )
 
         if not downloads:
             for match in RGX_QUALITY_LINK.finditer(html):

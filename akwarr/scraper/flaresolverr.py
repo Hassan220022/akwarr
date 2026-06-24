@@ -41,8 +41,11 @@ class FlareSolverrClient:
             return result
 
         if self.auto:
-            direct = await self._direct_get(target_url)
-            if not self._is_cloudflare_challenge(direct.text, direct.status_code):
+            try:
+                direct = await self._direct_get(target_url)
+            except httpx.HTTPError:
+                direct = None
+            if direct is not None and not self._is_cloudflare_challenge(direct.text, direct.status_code):
                 self._cache[cache_key] = (datetime.now() + timedelta(seconds=self._cache_ttl), direct)
                 return direct
 
