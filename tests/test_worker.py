@@ -472,6 +472,7 @@ async def test_start_episode_job_rejected_on_radarr_shim() -> None:
 @pytest.mark.asyncio
 async def test_start_episode_job_downloads_to_current_staging_root(tmp_path: Path) -> None:
     worker = object.__new__(DownloadWorker)
+    worker.settings = SimpleNamespace(is_radarr=False, is_sonarr=True)
     worker.store = FakeEpisodeStartStore()
     worker.scraper = FakeEpisodeScraper()
     worker.aria2 = FakeEpisodeAria2()

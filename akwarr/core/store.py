@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import aiosqlite
 
@@ -531,7 +532,7 @@ class Store:
                 return True
             if await self._find_active_job_id(db, kind, ref_id) is not None:
                 return True
-            return await self._find_completed_job_id(db, kind, ref_id) is not None
+            return False
 
     _ACTIVE_JOB_STATUSES = ("pending", "downloading", "paused", "importing", "failed")
 
