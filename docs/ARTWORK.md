@@ -51,13 +51,16 @@ Radarr/Sonarr/Jellyseerr on CT107 often already have a TMDB key — copy the sam
 
 ## Audit and fix
 
-On CT107 (or anywhere with media mounted and env set):
+On CT107 (host Python may lack deps — use the akwarr image):
 
 ```bash
-cd /opt/akwarr
-set -a && source .env && set +a
-python3 scripts/arabic-media-audit.py          # report only
-python3 scripts/arabic-media-audit.py --fix    # repair + Jellyfin library refresh
+ssh media 'docker run --rm -v /opt/akwarr:/opt/akwarr -v /media:/media --env-file /opt/akwarr/.env -e PYTHONPATH=/opt/akwarr -w /opt/akwarr akwarr_akwarr-sonarr python3 scripts/arabic-media-audit.py --fix'
+```
+
+Or on the host after `pip install httpx` and with `PYTHONPATH=/opt/akwarr`:
+
+```bash
+cd /opt/akwarr && set -a && source .env && set +a && python3 scripts/arabic-media-audit.py --fix
 ```
 
 JSON summary is written to `/tmp/arabic-audit.json`.
