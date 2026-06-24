@@ -1,4 +1,5 @@
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -251,10 +252,30 @@ async def test_check_download_requeues_stale_waiting_download() -> None:
             "id": 15,
             "aria2_gid": "waiting-gid",
             "created": "2020-01-01T00:00:00+00:00",
+            "updated": "2020-01-01T00:00:00+00:00",
         }
     )
 
     assert worker.store.requeued == [15]
+
+
+@pytest.mark.asyncio
+async def test_check_download_does_not_requeue_fresh_waiting_after_requeue() -> None:
+    worker = object.__new__(DownloadWorker)
+    worker.aria2 = StaleWaitingAria2()
+    worker.store = RequeueStore()
+    worker.settings = SimpleNamespace(stale_waiting_seconds=1800)
+
+    await worker._check_download(
+        {
+            "id": 16,
+            "aria2_gid": "waiting-gid",
+            "created": "2020-01-01T00:00:00+00:00",
+            "updated": datetime.now(UTC).isoformat(),
+        }
+    )
+
+    assert worker.store.requeued == []
 
 
 @pytest.mark.asyncio

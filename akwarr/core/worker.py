@@ -332,10 +332,10 @@ class DownloadWorker:
         if self._aria2_int(status.get("completedLength")) > 0:
             return False
         stale_after = max(int(self.settings.stale_waiting_seconds), 300)
-        created = job.get("created")
-        if not created:
+        since = job.get("updated") or job.get("created")
+        if not since:
             return False
-        parsed = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         age = (datetime.now(UTC) - parsed.astimezone(UTC)).total_seconds()
