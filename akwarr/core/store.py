@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -118,12 +118,14 @@ class Store:
                     staging_path TEXT,
                     dest_path TEXT,
                     error TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
                     created TEXT NOT NULL,
                     updated TEXT NOT NULL
                 );
                 """
             )
             await self._migrate_legacy_media_paths(db)
+            await self._ensure_jobs_retry_count(db)
             await db.commit()
 
     async def _migrate_legacy_media_paths(self, db: aiosqlite.Connection) -> None:
@@ -148,6 +150,12 @@ class Store:
                         """,
                         (old, new, f"{old}%"),
                     )
+
+    async def _ensure_jobs_retry_count(self, db: aiosqlite.Connection) -> None:
+        cur = await db.execute("PRAGMA table_info(jobs)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "retry_count" not in columns:
+            await db.execute("ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
 
     # ── Movies ──
 
@@ -432,6 +440,21 @@ class Store:
 
     # ── Jobs ──
 
+    async def has_blocking_job(self, kind: str, ref_id: int) -> bool:
+        """True when a job already exists and should not be duplicated by sync."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                SELECT 1 FROM jobs
+                WHERE kind = ?
+                  AND ref_id = ?
+                  AND status IN ('pending', 'downloading', 'paused', 'importing', 'failed')
+                LIMIT 1
+                """,
+                (kind, ref_id),
+            )
+            return (await cur.fetchone()) is not None
+
     async def create_job(self, kind: str, ref_id: int, dest_path: str) -> int:
         now = utcnow()
         async with aiosqlite.connect(self.db_path) as db:
@@ -470,6 +493,43 @@ class Store:
                 """
             )
             return [dict(r) for r in await cur.fetchall()]
+
+    async def list_retryable_failed_jobs(
+        self, *, retry_after_seconds: int, max_attempts: int
+    ) -> list[dict[str, Any]]:
+        """Failed jobs eligible for retry: updated long enough ago and under max attempts."""
+        cutoff = (datetime.now(UTC) - timedelta(seconds=retry_after_seconds)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT * FROM jobs
+                WHERE status = 'failed'
+                  AND retry_count < ?
+                  AND updated <= ?
+                ORDER BY id
+                """,
+                (max_attempts, cutoff),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def requeue_job(self, job_id: int) -> None:
+        """Reset a failed job back to pending and bump retry_count."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    retry_count = retry_count + 1,
+                    error = '',
+                    aria2_gid = NULL,
+                    staging_path = NULL,
+                    updated = ?
+                WHERE id = ?
+                """,
+                (utcnow(), job_id),
+            )
+            await db.commit()
 
     async def list_jobs(self, *, limit: int = 100) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:

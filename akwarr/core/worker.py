@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 
 from akwarr.config import Settings
@@ -23,6 +24,7 @@ class DownloadWorker:
         self.aria2 = Aria2Client(settings)
         self.organizer = MediaOrganizer(settings)
         self._running = False
+        self._last_release_scan: float | None = None
 
     async def run_forever(self) -> None:
         self._running = True
@@ -38,6 +40,8 @@ class DownloadWorker:
         self._running = False
 
     async def _process_jobs(self) -> None:
+        await self._requeue_failed_jobs()
+        await self._maybe_sync_missing_releases()
         jobs = await self.store.list_pending_jobs()
         active_statuses = {JobStatus.DOWNLOADING, JobStatus.IMPORTING}
         active_count = sum(1 for job in jobs if job["status"] in active_statuses)
@@ -55,6 +59,112 @@ class DownloadWorker:
                 break
             await self._start_job(job)
             active_count += 1
+
+    async def _requeue_failed_jobs(self) -> None:
+        """Requeue failed jobs that are eligible for retry (older than retry interval, under max attempts)."""
+        retry_after = max(int(self.settings.retry_failed_after_seconds), 60)
+        max_attempts = max(int(self.settings.max_retry_attempts), 1)
+        try:
+            retryable = await self.store.list_retryable_failed_jobs(
+                retry_after_seconds=retry_after, max_attempts=max_attempts
+            )
+        except Exception:
+            logger.exception("Failed to list retryable jobs")
+            return
+        for job in retryable:
+            logger.info(
+                "Requeuing failed job %s (attempt %s -> %s) after retry interval",
+                job["id"],
+                job.get("retry_count", 0),
+                job.get("retry_count", 0) + 1,
+            )
+            try:
+                await self.store.requeue_job(job["id"])
+            except Exception:
+                logger.exception("Failed to requeue job %s", job["id"])
+
+    async def _maybe_sync_missing_releases(self) -> None:
+        interval = max(int(self.settings.monitor_missing_interval_seconds), 300)
+        now = time.monotonic()
+        last_scan = getattr(self, "_last_release_scan", None)
+        if last_scan is not None and (now - last_scan) < interval:
+            return
+        self._last_release_scan = now
+        try:
+            if self.settings.is_sonarr:
+                await self._sync_missing_series_episodes()
+            else:
+                await self._sync_missing_movies()
+        except Exception:
+            logger.exception("Missing release sync failed")
+
+    async def _sync_missing_series_episodes(self) -> None:
+        for series in await self.store.list_series():
+            if not series.get("monitored") or not series.get("akwam_url"):
+                continue
+            try:
+                meta = await self.scraper.fetch_metadata(series["akwam_url"], kind="series")
+            except Exception:
+                logger.exception("Series metadata refresh failed for %s", series.get("title"))
+                continue
+            episodes = await self.store.list_episodes(series["id"])
+            by_key = {(e["season_number"], e["episode_number"]): e for e in episodes}
+            for ep in meta.episodes:
+                season = ep.season or 1
+                record = by_key.get((season, ep.number))
+                if record and record.get("has_file"):
+                    continue
+                ep_record = await self.store.upsert_episode(
+                    {
+                        "series_id": series["id"],
+                        "season_number": season,
+                        "episode_number": ep.number,
+                        "title": ep.title,
+                        "akwam_url": ep.url,
+                        "monitored": True,
+                        "has_file": False,
+                    }
+                )
+                if await self.store.has_blocking_job("episode", ep_record["id"]):
+                    continue
+                plan = self.organizer.episode_plan(
+                    series_title=series["title"],
+                    year=series.get("year"),
+                    season=season,
+                    episode=ep.number,
+                    episode_title=ep.title,
+                    quality="720p",
+                )
+                job_id = await self.store.create_job("episode", ep_record["id"], str(plan.video))
+                logger.info(
+                    "Queued missing episode S%02dE%02d for %s (job %s)",
+                    season,
+                    ep.number,
+                    series["title"],
+                    job_id,
+                )
+
+    async def _sync_missing_movies(self) -> None:
+        for movie in await self.store.list_movies():
+            if not movie.get("monitored") or movie.get("has_file"):
+                continue
+            if await self.store.has_blocking_job("movie", movie["id"]):
+                continue
+            akwam_url = movie.get("akwam_url")
+            if not akwam_url:
+                alt = movie.get("original_title") or ""
+                match = await self.scraper.best_match(
+                    movie["title"], section="movie", alt_queries=[alt] if alt else []
+                )
+                if not match:
+                    continue
+                akwam_url = match.url
+                await self.store.update_movie_akwam(movie["id"], akwam_url, match.poster, None)
+            plan = self.organizer.movie_plan(
+                title=movie["title"], year=movie.get("year"), quality="720p"
+            )
+            job_id = await self.store.create_job("movie", movie["id"], str(plan.video))
+            logger.info("Queued missing movie %s (job %s)", movie["title"], job_id)
 
     async def _start_job(self, job: dict) -> None:
         job_id = job["id"]

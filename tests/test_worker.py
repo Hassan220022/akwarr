@@ -67,9 +67,23 @@ class FakeProcessStore(FakeStore):
         self.jobs = jobs
         self.started: list[int] = []
         self.checked: list[int] = []
+        self.requeued: list[int] = []
+        self.retryable: list[dict] = []
 
     async def list_pending_jobs(self) -> list[dict]:
         return self.jobs
+
+    async def list_retryable_failed_jobs(self, *, retry_after_seconds: int, max_attempts: int) -> list[dict]:
+        return self.retryable
+
+    async def requeue_job(self, job_id: int) -> None:
+        self.requeued.append(job_id)
+
+    async def has_blocking_job(self, kind: str, ref_id: int) -> bool:
+        return False
+
+    async def list_series(self) -> list[dict]:
+        return []
 
 
 class ProcessWorker(DownloadWorker):
@@ -119,12 +133,145 @@ async def test_process_jobs_respects_max_active_downloads() -> None:
             {"id": 3, "status": JobStatus.PENDING},
         ]
     )
-    worker.settings = SimpleNamespace(max_active_downloads=2)
+    worker.settings = SimpleNamespace(
+        max_active_downloads=2,
+        retry_failed_after_seconds=3600,
+        max_retry_attempts=5,
+        monitor_missing_interval_seconds=3600,
+        is_sonarr=True,
+    )
 
     await worker._process_jobs()
 
     assert worker.store.checked == [1]
     assert worker.store.started == [2]
+    assert worker.store.requeued == []
+
+
+@pytest.mark.asyncio
+async def test_requeue_failed_jobs_requeues_eligible_failed_jobs() -> None:
+    """Failed jobs past the retry interval and under max attempts get requeued to pending."""
+    worker = object.__new__(ProcessWorker)
+    store = FakeProcessStore([])
+    store.retryable = [
+        {"id": 100, "status": JobStatus.FAILED, "retry_count": 1, "error": "No download links"},
+        {"id": 101, "status": JobStatus.FAILED, "retry_count": 0, "error": "DNS error"},
+    ]
+    worker.store = store
+    worker.settings = SimpleNamespace(
+        max_active_downloads=2,
+        retry_failed_after_seconds=3600,
+        max_retry_attempts=5,
+        monitor_missing_interval_seconds=3600,
+        is_sonarr=True,
+    )
+
+    await worker._requeue_failed_jobs()
+
+    assert worker.store.requeued == [100, 101]
+
+
+@pytest.mark.asyncio
+async def test_requeue_failed_jobs_skips_when_none_eligible() -> None:
+    """No requeue when there are no retryable failed jobs."""
+    worker = object.__new__(ProcessWorker)
+    worker.store = FakeProcessStore([])
+    worker.settings = SimpleNamespace(
+        max_active_downloads=2,
+        retry_failed_after_seconds=3600,
+        max_retry_attempts=5,
+        monitor_missing_interval_seconds=3600,
+        is_sonarr=True,
+    )
+
+    await worker._requeue_failed_jobs()
+
+    assert worker.store.requeued == []
+
+
+@pytest.mark.asyncio
+async def test_sync_missing_series_episodes_queues_new_episodes(tmp_path: Path) -> None:
+    worker = object.__new__(DownloadWorker)
+    worker.settings = SimpleNamespace(
+        monitor_missing_interval_seconds=0,
+        is_sonarr=True,
+    )
+    worker._last_release_scan = None
+    worker.organizer = MediaOrganizer(
+        Settings(
+            mode="sonarr",
+            movies_path=tmp_path / "movies",
+            series_path=tmp_path / "series",
+            staging_path=tmp_path / "staging",
+            data_path=tmp_path / "config",
+        )
+    )
+
+    class SyncStore:
+        def __init__(self) -> None:
+            self.jobs: list[tuple[str, int, str]] = []
+
+        async def list_series(self) -> list[dict]:
+            return [
+                {
+                    "id": 7,
+                    "title": "هي كيميا؟!",
+                    "year": 2026,
+                    "akwam_url": "https://akwam.it/series/5304/test",
+                    "monitored": True,
+                }
+            ]
+
+        async def list_episodes(self, series_id: int) -> list[dict]:
+            assert series_id == 7
+            return [{"id": 50, "season_number": 1, "episode_number": 1, "has_file": True}]
+
+        async def upsert_episode(self, data: dict) -> dict:
+            return {"id": 51, **data}
+
+        async def has_blocking_job(self, kind: str, ref_id: int) -> bool:
+            return False
+
+        async def create_job(self, kind: str, ref_id: int, dest_path: str) -> int:
+            self.jobs.append((kind, ref_id, dest_path))
+            return 99
+
+    class SyncScraper:
+        async def fetch_metadata(self, url: str, *, kind: str):
+            assert kind == "series"
+
+            class Ep:
+                season = 1
+                number = 2
+                title = "الحلقة 2"
+                url = "https://akwam.it/episode/93876/test"
+
+            class Meta:
+                episodes = [Ep()]
+
+            return Meta()
+
+    worker.store = SyncStore()
+    worker.scraper = SyncScraper()
+
+    await worker._sync_missing_series_episodes()
+
+    assert worker.store.jobs == [
+        (
+            "episode",
+            51,
+            str(
+                worker.organizer.episode_plan(
+                    series_title="هي كيميا؟!",
+                    year=2026,
+                    season=1,
+                    episode=2,
+                    episode_title="الحلقة 2",
+                    quality="720p",
+                ).video
+            ),
+        )
+    ]
 
 
 class LegacyStagingAria2:
