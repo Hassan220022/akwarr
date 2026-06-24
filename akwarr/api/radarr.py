@@ -194,15 +194,15 @@ async def add_movie(body: MovieAddBody) -> dict[str, Any]:
     poster = TMDBClient.poster_url(tmdb_data.get("poster_path"))
     fanart = TMDBClient.poster_url(tmdb_data.get("backdrop_path"))
     akwam_url = match.url if match else None
-    if match and match.poster and is_valid_artwork_url(match.poster):
+    if match and not poster and match.poster and is_valid_artwork_url(match.poster):
         poster = match.poster
 
     if match:
         try:
             meta = await scraper.fetch_metadata(match.url, kind="movie")
-            if meta.poster and is_valid_artwork_url(meta.poster):
+            if not poster and meta.poster and is_valid_artwork_url(meta.poster):
                 poster = meta.poster
-            if meta.fanart and is_valid_artwork_url(meta.fanart):
+            if not fanart and meta.fanart and is_valid_artwork_url(meta.fanart):
                 fanart = meta.fanart
             if meta.overview and not overview:
                 overview = meta.overview

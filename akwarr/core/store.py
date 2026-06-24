@@ -12,6 +12,8 @@ from typing import Any
 
 import aiosqlite
 
+from akwarr.scraper.akwam import is_valid_artwork_url
+
 
 def utcnow() -> str:
     return datetime.now(UTC).isoformat()
@@ -135,9 +137,28 @@ class Store:
                 """
             )
             await self._migrate_legacy_media_paths(db)
+            await self._sanitize_invalid_artwork_urls(db)
             await self._ensure_jobs_retry_count(db)
             await self._ensure_jobs_active_ref_index(db)
             await db.commit()
+
+    async def _sanitize_invalid_artwork_urls(self, db: aiosqlite.Connection) -> None:
+        for table in ("movies", "series"):
+            cur = await db.execute(f"PRAGMA table_info({table})")
+            columns = {row[1] for row in await cur.fetchall()}
+            if not {"poster_url", "fanart_url"}.issubset(columns):
+                continue
+            cur = await db.execute(f"SELECT id, poster_url, fanart_url FROM {table}")
+            rows = await cur.fetchall()
+            for row in rows:
+                row_id, poster_url, fanart_url = row
+                clean_poster = poster_url if is_valid_artwork_url(poster_url) else None
+                clean_fanart = fanart_url if is_valid_artwork_url(fanart_url) else None
+                if clean_poster != poster_url or clean_fanart != fanart_url:
+                    await db.execute(
+                        f"UPDATE {table} SET poster_url = ?, fanart_url = ? WHERE id = ?",
+                        (clean_poster, clean_fanart, row_id),
+                    )
 
     async def _migrate_legacy_media_paths(self, db: aiosqlite.Connection) -> None:
         replacements = [

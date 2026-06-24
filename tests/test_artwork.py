@@ -4,7 +4,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from akwarr.library import artwork as art
+from akwarr.library.metadata import MIN_ARTWORK_BYTES
 from akwarr.scraper.akwam import is_valid_artwork_url
+
+
+def _jpeg_bytes(size: int = MIN_ARTWORK_BYTES) -> bytes:
+    payload = b"x" * max(size - 3, 0)
+    return b"\xff\xd8\xff" + payload
 
 
 def test_is_valid_artwork_url_rejects_site_logo() -> None:
@@ -28,6 +34,38 @@ def test_movie_artwork_paths() -> None:
     assert art.movie_fanart_path(root).name == "fanart.jpg"
 
 
+def test_is_valid_local_image_rejects_small_and_svg(tmp_path: Path) -> None:
+    small = tmp_path / "small.jpg"
+    small.write_bytes(b"\xff\xd8\xffabc")
+    ok, reason = art.is_valid_local_image(small)
+    assert not ok
+    assert "too small" in reason
+
+    svg = tmp_path / "logo.jpg"
+    svg.write_bytes(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>" + b"x" * MIN_ARTWORK_BYTES)
+    ok, reason = art.is_valid_local_image(svg)
+    assert not ok
+    assert "svg" in reason
+
+    good = tmp_path / "good.jpg"
+    good.write_bytes(_jpeg_bytes())
+    ok, _ = art.is_valid_local_image(good)
+    assert ok
+
+
+def test_poster_matches_episode_thumb_by_md5(tmp_path: Path) -> None:
+    series = tmp_path / "Show"
+    season = series / "Season 01"
+    season.mkdir(parents=True)
+    thumb = season / "Show - S01E01 720p-thumb.jpg"
+    poster = series / "poster.jpg"
+    thumb.write_bytes(_jpeg_bytes())
+    poster.write_bytes(thumb.read_bytes())
+    is_thumb, name = art.poster_matches_episode_thumb(series)
+    assert is_thumb
+    assert name == thumb.name
+
+
 @pytest.mark.asyncio
 async def test_ensure_series_artwork_downloads_missing_files(
     tmp_path: Path,
@@ -35,8 +73,8 @@ async def test_ensure_series_artwork_downloads_missing_files(
 ) -> None:
     series_folder = tmp_path / "Show (2026)"
     series_folder.mkdir()
-    poster_bytes = b"poster-image"
-    fanart_bytes = b"fanart-image"
+    poster_bytes = _jpeg_bytes()
+    fanart_bytes = _jpeg_bytes(MIN_ARTWORK_BYTES + 1000)
 
     async def fake_download(url: str, dest: Path) -> bool:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +100,7 @@ async def test_ensure_series_artwork_downloads_missing_files(
 
 
 @pytest.mark.asyncio
-async def test_resolve_show_artwork_urls_falls_back_to_tmdb(
+async def test_resolve_show_artwork_urls_prefers_tmdb(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tmdb = AsyncMock()
@@ -78,13 +116,47 @@ async def test_resolve_show_artwork_urls_falls_back_to_tmdb(
         poster_url="https://akwam.it/style/assets/images/logo-white.svg",
         fanart_url="https://img.downet.net/uploads/BH0T9.jpg",
         tmdb_id=302546,
-        akwam_url=None,
+        akwam_url="https://akwam.it/series/example",
         tmdb=tmdb,
         scraper=None,
     )
 
     assert poster == "https://image.tmdb.org/t/p/original/abc.jpg"
-    assert fanart == "https://img.downet.net/uploads/BH0T9.jpg"
+    assert fanart == "https://image.tmdb.org/t/p/original/def.jpg"
+    tmdb.tv.assert_awaited_once_with(302546)
+
+
+@pytest.mark.asyncio
+async def test_resolve_show_artwork_urls_uses_akwam_only_when_tmdb_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tmdb = AsyncMock()
+    tmdb.enabled = True
+    tmdb.tv = AsyncMock(return_value={"poster_path": None, "backdrop_path": None})
+
+    scraper = AsyncMock()
+    scraper.fetch_metadata = AsyncMock(
+        return_value=type(
+            "Meta",
+            (),
+            {
+                "poster": "https://img.downet.net/uploads/poster.jpg",
+                "fanart": "https://img.downet.net/uploads/fanart.jpg",
+            },
+        )()
+    )
+
+    poster, fanart = await art.resolve_show_artwork_urls(
+        poster_url=None,
+        fanart_url=None,
+        tmdb_id=1,
+        akwam_url="https://akwam.it/series/example",
+        tmdb=tmdb,
+        scraper=scraper,
+    )
+
+    assert poster == "https://img.downet.net/uploads/poster.jpg"
+    assert fanart == "https://img.downet.net/uploads/fanart.jpg"
 
 
 @pytest.mark.asyncio
@@ -100,3 +172,49 @@ async def test_ensure_image_skips_invalid_urls(monkeypatch: pytest.MonkeyPatch, 
 
     assert not await art.ensure_image("https://akwam.it/style/assets/images/logo-white.svg", tmp_path / "x.jpg")
     assert not called
+
+
+@pytest.mark.asyncio
+async def test_ensure_image_rejects_episode_thumb_poster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series = tmp_path / "Show"
+    season = series / "Season 01"
+    season.mkdir(parents=True)
+    thumb_bytes = _jpeg_bytes()
+    (season / "Show - S01E01-thumb.jpg").write_bytes(thumb_bytes)
+
+    async def fake_download(url: str, dest: Path) -> bool:
+        dest.write_bytes(thumb_bytes)
+        return True
+
+    monkeypatch.setattr(art.meta, "download_image", fake_download)
+
+    ok = await art.ensure_image(
+        "https://cdn.example/poster.jpg",
+        series / "poster.jpg",
+        series_folder=series,
+    )
+    assert not ok
+    assert not (series / "poster.jpg").exists()
+
+
+@pytest.mark.asyncio
+async def test_ensure_image_replaces_invalid_existing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dest = tmp_path / "poster.jpg"
+    dest.write_bytes(b"tiny")
+
+    good = _jpeg_bytes()
+
+    async def fake_download(url: str, dest: Path) -> bool:
+        dest.write_bytes(good)
+        return True
+
+    monkeypatch.setattr(art.meta, "download_image", fake_download)
+
+    assert await art.ensure_image("https://cdn.example/poster.jpg", dest)
+    assert dest.read_bytes() == good

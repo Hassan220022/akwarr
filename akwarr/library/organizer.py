@@ -126,18 +126,14 @@ class MediaOrganizer:
         poster_file: str | None = None
         fanart_file: str | None = None
         if self.settings.save_akwam_artwork:
-            resolved_poster, resolved_fanart = await art.resolve_movie_artwork_urls(
+            await art.refresh_movie_artwork(
+                plan.folder,
                 poster_url=poster_url,
                 fanart_url=fanart_url,
                 tmdb_id=tmdb_id,
                 akwam_url=akwam_url,
                 tmdb=self.tmdb,
                 scraper=self.scraper,
-            )
-            await art.ensure_movie_artwork(
-                plan.folder,
-                poster_url=resolved_poster,
-                fanart_url=resolved_fanart,
             )
             if plan.poster.exists():
                 poster_file = plan.poster.name
@@ -192,19 +188,15 @@ class MediaOrganizer:
         poster_file: str | None = None
         fanart_file: str | None = None
         if self.settings.save_akwam_artwork:
-            resolved_poster, resolved_fanart = await art.resolve_show_artwork_urls(
+            await art.refresh_series_artwork(
+                series_folder,
+                season=season,
                 poster_url=poster_url,
                 fanart_url=fanart_url,
                 tmdb_id=tmdb_id,
                 akwam_url=akwam_url,
                 tmdb=self.tmdb,
                 scraper=self.scraper,
-            )
-            await art.ensure_series_artwork(
-                series_folder,
-                season=season,
-                poster_url=resolved_poster,
-                fanart_url=resolved_fanart,
             )
             poster_path = art.series_poster_path(series_folder)
             fanart_path = art.series_fanart_path(series_folder)

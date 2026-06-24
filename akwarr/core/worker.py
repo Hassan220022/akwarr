@@ -11,7 +11,10 @@ from pathlib import Path
 from akwarr.config import Settings
 from akwarr.core.retry import retry_delay_seconds
 from akwarr.core.store import JobStatus, Store
+from akwarr.core.tmdb import TMDBClient
 from akwarr.download.aria2 import Aria2Client
+from akwarr.library import artwork as art
+from akwarr.library import metadata as meta
 from akwarr.library.organizer import MediaOrganizer
 from akwarr.scraper.akwam import AkwamScraper
 
@@ -25,8 +28,10 @@ class DownloadWorker:
         self.scraper = AkwamScraper(settings)
         self.aria2 = Aria2Client(settings)
         self.organizer = MediaOrganizer(settings)
+        self.tmdb = TMDBClient(settings)
         self._running = False
         self._last_release_scan: float | None = None
+        self._last_artwork_validate: float | None = None
 
     async def run_forever(self) -> None:
         self._running = True
@@ -44,6 +49,7 @@ class DownloadWorker:
     async def _process_jobs(self) -> None:
         await self._requeue_failed_jobs()
         await self._maybe_sync_missing_releases()
+        await self._maybe_validate_artwork()
         jobs = await self.store.list_pending_jobs()
         for job in jobs:
             status = job["status"]
@@ -114,6 +120,102 @@ class DownloadWorker:
                 await self._sync_missing_movies()
         except Exception:
             logger.exception("Missing release sync failed")
+
+    async def _maybe_validate_artwork(self) -> None:
+        if not getattr(self.settings, "save_akwam_artwork", True):
+            return
+        interval = max(int(getattr(self.settings, "artwork_validate_interval_seconds", 604800)), 3600)
+        now = time.monotonic()
+        last = getattr(self, "_last_artwork_validate", None)
+        if last is not None and (now - last) < interval:
+            return
+        self._last_artwork_validate = now
+        try:
+            if self.settings.is_sonarr:
+                await self._validate_series_artwork()
+            else:
+                await self._validate_movie_artwork()
+        except Exception:
+            logger.exception("Periodic artwork validation failed")
+
+    async def _validate_series_artwork(self) -> None:
+        refreshed = 0
+        for series in await self.store.list_series():
+            if not series.get("monitored"):
+                continue
+            folder = self._series_folder(series)
+            if not folder.is_dir():
+                continue
+            if not art.local_poster_needs_refresh(folder, kind="series"):
+                continue
+            ok = await art.refresh_series_artwork(
+                folder,
+                season=1,
+                poster_url=series.get("poster_url"),
+                fanart_url=series.get("fanart_url"),
+                tmdb_id=series.get("tmdb_id"),
+                akwam_url=series.get("akwam_url"),
+                tmdb=self.tmdb,
+                scraper=self.scraper,
+            )
+            if ok:
+                tvshow_nfo = folder / "tvshow.nfo"
+                if tvshow_nfo.exists():
+                    meta.patch_nfo_art(
+                        tvshow_nfo,
+                        poster_file="poster.jpg",
+                        fanart_file="fanart.jpg" if art.series_fanart_path(folder).is_file() else None,
+                    )
+                await self.organizer.jellyfin.refresh_path(str(folder))
+                refreshed += 1
+        if refreshed:
+            logger.info("Periodic artwork validation refreshed %s series", refreshed)
+
+    async def _validate_movie_artwork(self) -> None:
+        refreshed = 0
+        for movie in await self.store.list_movies():
+            if not movie.get("monitored") or not movie.get("has_file"):
+                continue
+            folder = self._movie_folder(movie)
+            if not folder.is_dir():
+                continue
+            if not art.local_poster_needs_refresh(folder, kind="movie"):
+                continue
+            ok = await art.refresh_movie_artwork(
+                folder,
+                poster_url=movie.get("poster_url"),
+                fanart_url=movie.get("fanart_url"),
+                tmdb_id=movie.get("tmdb_id"),
+                akwam_url=movie.get("akwam_url"),
+                tmdb=self.tmdb,
+                scraper=self.scraper,
+            )
+            if ok:
+                nfo = folder / "movie.nfo"
+                if nfo.exists():
+                    meta.patch_nfo_art(
+                        nfo,
+                        poster_file="poster.jpg",
+                        fanart_file="fanart.jpg" if art.movie_fanart_path(folder).is_file() else None,
+                    )
+                await self.organizer.jellyfin.refresh_path(str(folder))
+                refreshed += 1
+        if refreshed:
+            logger.info("Periodic artwork validation refreshed %s movies", refreshed)
+
+    def _series_folder(self, series: dict) -> Path:
+        if series.get("path"):
+            return Path(series["path"])
+        return self.organizer.series_folder(title=series["title"], year=series.get("year"))
+
+    def _movie_folder(self, movie: dict) -> Path:
+        if movie.get("path"):
+            return Path(movie["path"]).parent
+        return self.organizer.movie_plan(
+            title=movie["title"],
+            year=movie.get("year"),
+            quality="720p",
+        ).folder
 
     async def _sync_missing_series_episodes(self) -> None:
         for series in await self.store.list_series():
@@ -375,6 +477,7 @@ class DownloadWorker:
                 await self._import_movie(job, Path(staging_path))
             elif job["kind"] == "episode":
                 await self._import_episode(job, Path(staging_path))
+            await self._post_import_artwork(job)
             await self.store.update_job(job["id"], status=JobStatus.COMPLETED)
         except Exception as exc:
             logger.exception("Import failed for job %s", job["id"])
@@ -452,6 +555,57 @@ class DownloadWorker:
         await self.store.set_episode_file(episode["id"], str(final), has_file=True)
         if not series.get("path"):
             await self.store.set_series_path(series["id"], str(show_folder))
+
+    async def _post_import_artwork(self, job: dict) -> None:
+        if not self.settings.save_akwam_artwork:
+            return
+        try:
+            if job["kind"] == "movie":
+                movie = await self.store.get_movie(job["ref_id"])
+                if not movie:
+                    return
+                folder = self._movie_folder(movie)
+                if not folder.is_dir():
+                    return
+                await art.refresh_movie_artwork(
+                    folder,
+                    poster_url=movie.get("poster_url"),
+                    fanart_url=movie.get("fanart_url"),
+                    tmdb_id=movie.get("tmdb_id"),
+                    akwam_url=movie.get("akwam_url"),
+                    tmdb=self.tmdb,
+                    scraper=self.scraper,
+                )
+                nfo = folder / "movie.nfo"
+                if nfo.exists():
+                    meta.patch_nfo_art(nfo, poster_file="poster.jpg", fanart_file="fanart.jpg")
+                await self.organizer.jellyfin.refresh_path(str(folder))
+            elif job["kind"] == "episode":
+                episode = await self.store.get_episode(job["ref_id"])
+                if not episode:
+                    return
+                series = await self.store.get_series(episode["series_id"])
+                if not series:
+                    return
+                folder = self._series_folder(series)
+                if not folder.is_dir():
+                    return
+                await art.refresh_series_artwork(
+                    folder,
+                    season=episode["season_number"],
+                    poster_url=series.get("poster_url"),
+                    fanart_url=series.get("fanart_url"),
+                    tmdb_id=series.get("tmdb_id"),
+                    akwam_url=series.get("akwam_url"),
+                    tmdb=self.tmdb,
+                    scraper=self.scraper,
+                )
+                tvshow_nfo = folder / "tvshow.nfo"
+                if tvshow_nfo.exists():
+                    meta.patch_nfo_art(tvshow_nfo, poster_file="poster.jpg", fanart_file="fanart.jpg")
+                await self.organizer.jellyfin.refresh_path(str(folder))
+        except Exception:
+            logger.exception("Post-import artwork refresh failed for job %s", job.get("id"))
 
 
 def _metadata_value(item: dict, key: str) -> str | None:

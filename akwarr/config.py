@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     monitor_missing_interval_seconds: int = Field(
         default=3600, alias="MONITOR_MISSING_INTERVAL_SECONDS"
     )
+    artwork_validate_interval_seconds: int = Field(
+        default=604800, alias="ARTWORK_VALIDATE_INTERVAL_SECONDS"
+    )
     file_mode: int = Field(default=0o664, alias="FILE_MODE")
     dir_mode: int = Field(default=0o775, alias="DIR_MODE")
 

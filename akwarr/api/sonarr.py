@@ -250,9 +250,9 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
         try:
             meta = await scraper.fetch_metadata(match.url, kind="series")
             akwam_episodes = meta.episodes
-            if meta.poster and is_valid_artwork_url(meta.poster):
+            if not poster and meta.poster and is_valid_artwork_url(meta.poster):
                 poster = meta.poster
-            if meta.fanart and is_valid_artwork_url(meta.fanart):
+            if not fanart and meta.fanart and is_valid_artwork_url(meta.fanart):
                 fanart = meta.fanart
             if meta.overview and not overview:
                 overview = meta.overview

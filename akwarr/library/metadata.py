@@ -10,6 +10,8 @@ import httpx
 
 from akwarr.scraper.akwam import is_valid_artwork_url
 
+MIN_ARTWORK_BYTES = 50_000
+
 
 def _indent(elem: ET.Element, level: int = 0) -> None:
     pad = "\n" + "  " * level
@@ -144,10 +146,15 @@ async def download_image(url: str, dest: Path) -> bool:
             content_type = r.headers.get("content-type", "")
             if "svg" in content_type.lower():
                 return False
-            if "image" not in content_type and len(r.content) < 500:
+            body = r.content
+            if b"<svg" in body[:500].lower() or body.startswith(b"<?xml"):
+                return False
+            if len(body) < MIN_ARTWORK_BYTES:
+                return False
+            if "image" not in content_type and len(body) < MIN_ARTWORK_BYTES:
                 return False
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(r.content)
+            dest.write_bytes(body)
             return True
     except httpx.HTTPError:
         return False

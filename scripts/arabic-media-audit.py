@@ -23,7 +23,7 @@ JELLYFIN_SERIES_LIB = "f088360ebd3d3206bf457c7268835078"
 JELLYFIN_MOVIES_LIB = "d95af285f1359f06325593fc15d6623f"
 PATH_MAP = ("/media/", "/cc/")
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".webm"}
-MIN_ART_BYTES = 10_240
+from akwarr.library.artwork import is_valid_local_image, poster_matches_episode_thumb
 SONARR_DB_CANDIDATES = [
     Path("/config/sonarr/akwarr.db"),
     Path("/var/lib/docker/volumes/akwarr_akwarr-sonarr-config/_data/akwarr.db"),
@@ -86,21 +86,7 @@ def jellyfin_path(local: Path) -> str:
 
 
 def is_valid_image(path: Path) -> tuple[bool, str]:
-    if not path.exists():
-        return False, "missing"
-    size = path.stat().st_size
-    if size < MIN_ART_BYTES:
-        return False, f"too small ({size}B)"
-    head = path.read_bytes()[:16]
-    if head.startswith(b"<") or head.startswith(b"<?xml") or b"svg" in head[:200].lower():
-        return False, "svg/xml not image"
-    if head[:3] == b"\xff\xd8\xff":
-        return True, f"jpeg {size}B"
-    if head[:8] == b"\x89PNG\r\n\x1a\n":
-        return True, f"png {size}B"
-    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
-        return True, f"webp {size}B"
-    return False, f"unknown format ({size}B)"
+    return is_valid_local_image(path)
 
 
 def nfo_art_tags(nfo_path: Path) -> tuple[bool, str]:
@@ -182,17 +168,7 @@ def md5_file(path: Path) -> str | None:
 
 
 def poster_is_episode_thumb(folder: Path) -> tuple[bool, str]:
-    """Detect poster.jpg copied from an episode *-thumb.jpg (common mis-art)."""
-    poster = folder / "poster.jpg"
-    if not poster.exists():
-        return False, ""
-    poster_md5 = md5_file(poster)
-    if not poster_md5:
-        return False, ""
-    for thumb in folder.glob("*-thumb.jpg"):
-        if md5_file(thumb) == poster_md5:
-            return True, thumb.name
-    return False, ""
+    return poster_matches_episode_thumb(folder)
 
 
 def patch_nfo_if_needed(folder: Path, kind: str) -> str | None:
@@ -357,16 +333,41 @@ async def try_fix_artwork(
     akwam_url = (record or {}).get("akwam_url")
     tmdb_id = (record or {}).get("tmdb_id")
 
-    if poster_url or fanart_url:
-        if kind == "series":
-            await art.ensure_series_artwork(
-                folder, season=1, poster_url=poster_url, fanart_url=fanart_url
-            )
+    from akwarr.config import get_settings
+    from akwarr.core.tmdb import TMDBClient
+    from akwarr.scraper.akwam import AkwamScraper
+
+    settings = get_settings()
+    tmdb = TMDBClient(settings)
+    scraper = AkwamScraper(settings)
+
+    if kind == "series":
+        ok = await art.refresh_series_artwork(
+            folder,
+            season=1,
+            poster_url=poster_url,
+            fanart_url=fanart_url,
+            tmdb_id=tmdb_id,
+            akwam_url=akwam_url,
+            tmdb=tmdb,
+            scraper=scraper,
+        )
+        if ok:
             nfo = folder / "tvshow.nfo"
             if nfo.exists():
                 meta.patch_nfo_art(nfo, poster_file="poster.jpg", fanart_file="fanart.jpg")
-        else:
-            await art.ensure_movie_artwork(folder, poster_url=poster_url, fanart_url=fanart_url)
+            fixes.append("refreshed series artwork")
+    else:
+        ok = await art.refresh_movie_artwork(
+            folder,
+            poster_url=poster_url,
+            fanart_url=fanart_url,
+            tmdb_id=tmdb_id,
+            akwam_url=akwam_url,
+            tmdb=tmdb,
+            scraper=scraper,
+        )
+        if ok:
             nfo = folder / "movie.nfo"
             if nfo.exists():
                 meta.patch_nfo_art(nfo, poster_file="poster.jpg", fanart_file="fanart.jpg")
@@ -376,51 +377,7 @@ async def try_fix_artwork(
                     poster_file="poster.jpg",
                     fanart_file="fanart.jpg",
                 )
-        fixes.append("downloaded artwork from DB URLs")
-        return
-
-    if akwam_url:
-        from akwarr.config import get_settings
-        from akwarr.scraper.akwam import AkwamScraper
-
-        settings = get_settings()
-        scraper = AkwamScraper(settings)
-        scrape_kind = "series" if kind == "series" else "movie"
-        meta_data = await scraper.fetch_metadata(akwam_url, kind=scrape_kind)
-        if kind == "series":
-            await art.ensure_series_artwork(
-                folder,
-                season=1,
-                poster_url=meta_data.poster,
-                fanart_url=meta_data.fanart,
-            )
-            nfo = folder / "tvshow.nfo"
-            if nfo.exists():
-                meta.patch_nfo_art(nfo, poster_file="poster.jpg", fanart_file="fanart.jpg")
-        else:
-            await art.ensure_movie_artwork(
-                folder, poster_url=meta_data.poster, fanart_url=meta_data.fanart
-            )
-        fixes.append("downloaded artwork from Akwam scrape")
-        return
-
-    if tmdb_id and os.environ.get("TMDB_API_KEY"):
-        from akwarr.config import get_settings
-        from akwarr.core.tmdb import TMDBClient
-
-        settings = get_settings()
-        tmdb = TMDBClient(settings)
-        if kind == "series":
-            data = await tmdb.tv(tmdb_id)
-            poster = TMDBClient.poster_url(data.get("poster_path"))
-            fanart = TMDBClient.poster_url(data.get("backdrop_path"))
-            await art.ensure_series_artwork(folder, season=1, poster_url=poster, fanart_url=fanart)
-        else:
-            data = await tmdb.movie(tmdb_id)
-            poster = TMDBClient.poster_url(data.get("poster_path"))
-            fanart = TMDBClient.poster_url(data.get("backdrop_path"))
-            await art.ensure_movie_artwork(folder, poster_url=poster, fanart_url=fanart)
-        fixes.append("downloaded artwork from TMDB")
+            fixes.append("refreshed movie artwork")
 
 
 async def audit_series(

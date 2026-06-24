@@ -5,6 +5,46 @@ from akwarr.core.store import JobStatus, Store
 
 
 @pytest.mark.asyncio
+async def test_store_init_clears_invalid_artwork_urls(tmp_path):
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+    await store.add_movie(
+        {
+            "tmdb_id": 1,
+            "title": "Film",
+            "root_folder_path": str(tmp_path / "Movie" / "Arabic"),
+            "poster_url": "https://akwam.it/style/assets/images/logo-white.svg",
+            "fanart_url": "https://img.downet.net/uploads/BH0T9.jpg",
+        }
+    )
+    await store.add_series(
+        {
+            "tmdb_id": 2,
+            "title": "Show",
+            "root_folder_path": str(tmp_path / "Serries" / "Arabic"),
+            "poster_url": "https://img.downet.net/uploads/poster.jpg",
+            "fanart_url": "https://akwam.it/style/assets/images/logo-white.svg",
+        }
+    )
+
+    await store.init()
+
+    movie = await store.get_movie_by_tmdb(1)
+    series = await store.get_series_by_tmdb(2)
+
+    assert movie is not None
+    assert series is not None
+    assert movie["poster_url"] is None
+    assert movie["fanart_url"] == "https://img.downet.net/uploads/BH0T9.jpg"
+    assert series["poster_url"] == "https://img.downet.net/uploads/poster.jpg"
+    assert series["fanart_url"] is None
+
+
+@pytest.mark.asyncio
 async def test_store_init_migrates_legacy_arabic_media_paths(tmp_path):
     db_path = tmp_path / "akwarr.db"
     async with aiosqlite.connect(db_path) as db:

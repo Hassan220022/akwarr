@@ -18,7 +18,7 @@ Jellyseerr  →  Akwarr (Radarr/Sonarr API)  →  Akwam + FlareSolverr + aria2
 - **TMDB + IMDb + ElCinema metadata** — Jellyfin NFO sidecars include TMDB, IMDb, and ElCinema IDs when available
 - **TVDB-to-TMDB fallback** — Sonarr-style Jellyseerr TV requests can resolve through TheTVDB's public TMDB link when TMDB's external-ID lookup misses
 - **Arabic-first Akwam matching** — converts Jellyseerr/TMDB English titles into Arabic search candidates with ElCinema, then searches Akwam with Arabic candidates only when any Arabic title is available
-- **Akwam artwork fallback** — saves `poster.jpg` / `fanart.jpg` from Akwam when useful
+- **Akwam artwork fallback** — saves `poster.jpg` / `fanart.jpg` with TMDB-first resolution and validation guards ([docs/ARTWORK.md](docs/ARTWORK.md))
 - **Jellyfin-friendly layout** — standard movie folders and `Season XX/SxxExx` episode naming
 - **HTTP downloads via aria2** — Akwam direct links (not torrents; Deluge stays English-only)
 - **Cloudflare bypass** — FlareSolverr integration with session reuse
@@ -84,8 +84,8 @@ On CT113 (Jellyfin): `/cc/Movie/Arabic` and `/cc/Serries/Arabic` (same ZFS pool)
 
 Jellyseerr may send Sonarr requests by TVDB ID, for example `tvdb:477454` for `Ward Ala Foll Wa Yasmeen (2026)`. If TMDB's external-ID lookup has no TV result for that TVDB ID, Akwarr falls back to TheTVDB's public series page and follows the linked TMDB series before returning the Sonarr-compatible lookup payload. The known mapping for this case is:
 
-| Jellyseerr / TVDB | TMDB | Akwam |
-| ----------------- | ---- | ----- |
+| Jellyseerr / TVDB                                 | TMDB                                 | Akwam                                             |
+| ------------------------------------------------- | ------------------------------------ | ------------------------------------------------- |
 | `tvdb:477454` / `Ward Ala Foll Wa Yasmeen (2026)` | `tmdb:299988` / `ورد على فل وياسمين` | `https://akwam.it/series/5658/ورد-على-فل-وياسمين` |
 
 Live probe from CT107:
@@ -119,9 +119,9 @@ Active Akwarr jobs include `status`, `size`, `sizeleft`, `timeleft`, `estimatedC
 
 Create two libraries:
 
-| Library       | Path                |
-| ------------- | ------------------- |
-| Arabic Movies | `/cc/Movie/Arabic` |
+| Library       | Path                 |
+| ------------- | -------------------- |
+| Arabic Movies | `/cc/Movie/Arabic`   |
 | Arabic Series | `/cc/Serries/Arabic` |
 
 Recommended library settings:
@@ -166,18 +166,18 @@ MODE=sonarr DATA_PATH=./data/sonarr akwarr-sonarr
 
 See [`.env.example`](.env.example) for the full list. Key values:
 
-| Variable                            | Description                          |
-| ----------------------------------- | ------------------------------------ |
-| `AKWARR_API_KEY`                    | Jellyseerr X-Api-Key                 |
-| `TMDB_API_KEY`                      | TMDB/IMDb metadata for titles + NFO  |
-| `ELCINEMA_ENABLE` / `ELCINEMA_BASE` | Arabic title bridge + NFO source URL |
-| `ARIA2_SECRET`                      | aria2 JSON-RPC token, default `P3TERX` |
-| `BANDWIDTH_TEST_URL` / `BANDWIDTH_TEST_SECONDS` | URL and max seconds for setup to measure current WAN download speed |
-| `BANDWIDTH_MEASURED_MBIT` / `ARIA2_BANDWIDTH_LIMIT_PERCENT` | Measured WAN Mbps and percent cap; default cap percent is 60% |
-| `ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT`  | aria2 total download cap calculated from measured speed; set only for manual override |
-| `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Trigger library refresh after import |
-| `MOVIES_PATH` / `SERIES_PATH`       | Final media destinations             |
-| `STAGING_PATH`                      | Temporary aria2 download area        |
+| Variable                                                    | Description                                                                           |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `AKWARR_API_KEY`                                            | Jellyseerr X-Api-Key                                                                  |
+| `TMDB_API_KEY`                                              | TMDB/IMDb metadata for titles + NFO                                                   |
+| `ELCINEMA_ENABLE` / `ELCINEMA_BASE`                         | Arabic title bridge + NFO source URL                                                  |
+| `ARIA2_SECRET`                                              | aria2 JSON-RPC token, default `P3TERX`                                                |
+| `BANDWIDTH_TEST_URL` / `BANDWIDTH_TEST_SECONDS`             | URL and max seconds for setup to measure current WAN download speed                   |
+| `BANDWIDTH_MEASURED_MBIT` / `ARIA2_BANDWIDTH_LIMIT_PERCENT` | Measured WAN Mbps and percent cap; default cap percent is 60%                         |
+| `ARIA2_MAX_OVERALL_DOWNLOAD_LIMIT`                          | aria2 total download cap calculated from measured speed; set only for manual override |
+| `JELLYFIN_URL` / `JELLYFIN_API_KEY`                         | Trigger library refresh after import                                                  |
+| `MOVIES_PATH` / `SERIES_PATH`                               | Final media destinations                                                              |
+| `STAGING_PATH`                                              | Temporary aria2 download area                                                         |
 
 ## Architecture
 
