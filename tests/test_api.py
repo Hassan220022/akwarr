@@ -1158,10 +1158,11 @@ async def test_akwam_series_download_endpoint_queues_selected_episodes(
     series_root = tmp_path / "Serries" / "Arabic"
     monkeypatch.setenv("AKWARR_API_KEY", "secret")
     monkeypatch.setenv("SERIES_PATH", str(series_root))
+    monkeypatch.setenv("MODE", "sonarr")
     get_settings.cache_clear()
-    monkeypatch.setattr(radarr, "store", FakeStore())
+    monkeypatch.setattr(sonarr, "store", FakeStore())
 
-    transport = ASGITransport(app=radarr_app)
+    transport = ASGITransport(app=sonarr_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/v3/akwam/series/download?apikey=secret",
@@ -1194,6 +1195,36 @@ async def test_akwam_series_download_endpoint_queues_selected_episodes(
     assert [episode["episode_number"] for episode in captured["episodes"]] == [1, 3]
     assert [job[0] for job in captured["jobs"]] == ["episode", "episode"]
     assert all(str(series_root) in job[2] for job in captured["jobs"])
+
+
+@pytest.mark.asyncio
+async def test_akwam_series_download_rejected_on_radarr_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKWARR_API_KEY", "secret")
+    monkeypatch.setenv("MODE", "radarr")
+    get_settings.cache_clear()
+
+    transport = ASGITransport(app=radarr_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v3/akwam/series/download?apikey=secret",
+            json={
+                "title": "ورد على فل وياسمين",
+                "url": "https://akwam.it/series/5658/ورد-على-فل-وياسمين",
+                "episodes": [
+                    {
+                        "season": 1,
+                        "number": 1,
+                        "title": "حلقة 1",
+                        "url": "https://akwam.it/episode/101208/ورد-على-فل-وياسمين/الحلقة-1",
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "sonarr shim" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

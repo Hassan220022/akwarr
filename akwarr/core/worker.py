@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from akwarr.config import Settings
+from akwarr.core.retry import retry_delay_seconds
 from akwarr.core.store import JobStatus, Store
 from akwarr.download.aria2 import Aria2Client
 from akwarr.library.organizer import MediaOrganizer
@@ -63,20 +64,35 @@ class DownloadWorker:
     async def _requeue_failed_jobs(self) -> None:
         """Requeue failed jobs that are eligible for retry (older than retry interval, under max attempts)."""
         retry_after = max(int(self.settings.retry_failed_after_seconds), 60)
+        transient_after = max(int(self.settings.retry_transient_after_seconds), 30)
+        transient_max = max(int(self.settings.retry_transient_max_seconds), transient_after)
         max_attempts = max(int(self.settings.max_retry_attempts), 1)
+
+        def delay_for(job: dict) -> int:
+            return retry_delay_seconds(
+                error=job.get("error"),
+                retry_count=int(job.get("retry_count") or 0),
+                default_after_seconds=retry_after,
+                transient_base_seconds=transient_after,
+                transient_max_seconds=transient_max,
+            )
+
         try:
             retryable = await self.store.list_retryable_failed_jobs(
-                retry_after_seconds=retry_after, max_attempts=max_attempts
+                max_attempts=max_attempts,
+                delay_seconds_for=delay_for,
             )
         except Exception:
             logger.exception("Failed to list retryable jobs")
             return
         for job in retryable:
+            delay = delay_for(job)
             logger.info(
-                "Requeuing failed job %s (attempt %s -> %s) after retry interval",
+                "Requeuing failed job %s (attempt %s -> %s) after %ss retry interval",
                 job["id"],
                 job.get("retry_count", 0),
                 job.get("retry_count", 0) + 1,
+                delay,
             )
             try:
                 await self.store.requeue_job(job["id"])
@@ -172,6 +188,13 @@ class DownloadWorker:
         ref_id = job["ref_id"]
 
         try:
+            if kind == "episode" and self.settings.is_radarr:
+                await self.store.update_job(
+                    job_id,
+                    status=JobStatus.FAILED,
+                    error="episode jobs are not supported on the radarr shim",
+                )
+                return
             if kind == "movie":
                 movie = await self.store.get_movie(ref_id)
                 if not movie:

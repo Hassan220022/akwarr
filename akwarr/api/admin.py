@@ -162,6 +162,11 @@ def create_admin_router(get_store: Callable[[], Store]) -> APIRouter:
     @router.post("/api/v3/akwam/series/download")
     async def akwam_series_download(body: AkwamSeriesDownloadBody) -> dict[str, Any]:
         settings = get_settings()
+        if not settings.is_sonarr:
+            raise HTTPException(
+                status_code=400,
+                detail="Series episode downloads must be queued on the sonarr shim",
+            )
         _validate_akwam_url(body.url, settings.akwam_base)
         for episode in body.episodes:
             _validate_akwam_url(episode.url, settings.akwam_base)

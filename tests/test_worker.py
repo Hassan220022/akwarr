@@ -73,7 +73,7 @@ class FakeProcessStore(FakeStore):
     async def list_pending_jobs(self) -> list[dict]:
         return self.jobs
 
-    async def list_retryable_failed_jobs(self, *, retry_after_seconds: int, max_attempts: int) -> list[dict]:
+    async def list_retryable_failed_jobs(self, *, max_attempts: int, delay_seconds_for) -> list[dict]:
         return self.retryable
 
     async def requeue_job(self, job_id: int) -> None:
@@ -135,7 +135,9 @@ async def test_process_jobs_respects_max_active_downloads() -> None:
     )
     worker.settings = SimpleNamespace(
         max_active_downloads=2,
-        retry_failed_after_seconds=3600,
+        retry_failed_after_seconds=300,
+        retry_transient_after_seconds=60,
+        retry_transient_max_seconds=600,
         max_retry_attempts=5,
         monitor_missing_interval_seconds=3600,
         is_sonarr=True,
@@ -160,7 +162,9 @@ async def test_requeue_failed_jobs_requeues_eligible_failed_jobs() -> None:
     worker.store = store
     worker.settings = SimpleNamespace(
         max_active_downloads=2,
-        retry_failed_after_seconds=3600,
+        retry_failed_after_seconds=300,
+        retry_transient_after_seconds=60,
+        retry_transient_max_seconds=600,
         max_retry_attempts=5,
         monitor_missing_interval_seconds=3600,
         is_sonarr=True,
@@ -178,7 +182,9 @@ async def test_requeue_failed_jobs_skips_when_none_eligible() -> None:
     worker.store = FakeProcessStore([])
     worker.settings = SimpleNamespace(
         max_active_downloads=2,
-        retry_failed_after_seconds=3600,
+        retry_failed_after_seconds=300,
+        retry_transient_after_seconds=60,
+        retry_transient_max_seconds=600,
         max_retry_attempts=5,
         monitor_missing_interval_seconds=3600,
         is_sonarr=True,
@@ -311,6 +317,25 @@ async def test_check_download_requeues_legacy_staging_downloads() -> None:
                 "status": JobStatus.PENDING,
                 "staging_path": "/media/Download/akwarr-staging/requeued/job-5/movie.mp4",
                 "error": "requeued legacy staging download",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_episode_job_rejected_on_radarr_shim() -> None:
+    worker = object.__new__(DownloadWorker)
+    worker.settings = SimpleNamespace(is_radarr=True, is_sonarr=False)
+    worker.store = FakeEpisodeStartStore()
+
+    await worker._start_job({"id": 9, "kind": "episode", "ref_id": 123})
+
+    assert worker.store.updates == [
+        (
+            9,
+            {
+                "status": JobStatus.FAILED,
+                "error": "episode jobs are not supported on the radarr shim",
             },
         )
     ]

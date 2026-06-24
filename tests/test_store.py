@@ -232,6 +232,59 @@ async def test_create_job_skips_when_movie_has_file(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_create_job_skips_when_completed_job_exists(tmp_path):
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    first = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E01.mkv")
+    await store.update_job(first, status=JobStatus.COMPLETED)
+
+    second = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E01.mkv")
+
+    assert second == 0
+    jobs = await store.list_jobs()
+    active = [job for job in jobs if job["status"] != JobStatus.DELETED]
+    assert len(active) == 1
+    assert active[0]["status"] == JobStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_init_dedupes_pending_jobs_when_completed_exists(tmp_path):
+    from akwarr.core.store import utcnow
+
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    completed = await store.create_job("episode", 12, "/media/ep-a.mkv")
+    await store.update_job(completed, status=JobStatus.COMPLETED)
+
+    async with aiosqlite.connect(store.db_path) as db:
+        await db.execute("DROP INDEX IF EXISTS idx_jobs_active_kind_ref")
+        await db.execute(
+            "INSERT INTO jobs (kind, ref_id, status, dest_path, created, updated) VALUES (?, ?, ?, ?, ?, ?)",
+            ("episode", 12, JobStatus.PENDING, "/media/ep-b.mkv", utcnow(), utcnow()),
+        )
+        await db.commit()
+
+    await store.init()
+
+    jobs = await store.list_jobs()
+    active = [job for job in jobs if job["status"] in store._ACTIVE_JOB_STATUSES]
+    assert active == []
+    completed_jobs = [job for job in jobs if job["status"] == JobStatus.COMPLETED]
+    assert len(completed_jobs) == 1
+    assert completed_jobs[0]["id"] == completed
+
+
+@pytest.mark.asyncio
 async def test_init_dedupes_active_jobs_before_unique_index(tmp_path):
     from akwarr.core.store import utcnow
 
@@ -273,7 +326,10 @@ async def test_list_retryable_failed_jobs_returns_failed_jobs_under_max_attempts
     job_id = await store.create_job("episode", 50, "/media/ep.mkv")
     await store.update_job(job_id, status=JobStatus.FAILED, error="No download links")
 
-    retryable = await store.list_retryable_failed_jobs(retry_after_seconds=0, max_attempts=5)
+    retryable = await store.list_retryable_failed_jobs(
+        max_attempts=5,
+        delay_seconds_for=lambda _job: 0,
+    )
     assert len(retryable) == 1
     assert retryable[0]["id"] == job_id
     assert retryable[0]["retry_count"] == 0
@@ -295,7 +351,10 @@ async def test_list_retryable_failed_jobs_excludes_jobs_at_max_attempts(tmp_path
         await store.requeue_job(job_id)
         await store.update_job(job_id, status=JobStatus.FAILED, error="still failing")
 
-    retryable = await store.list_retryable_failed_jobs(retry_after_seconds=0, max_attempts=5)
+    retryable = await store.list_retryable_failed_jobs(
+        max_attempts=5,
+        delay_seconds_for=lambda _job: 0,
+    )
     assert retryable == []
 
 
@@ -351,10 +410,16 @@ async def test_list_retryable_failed_jobs_respects_retry_interval(tmp_path):
         )
         await db.commit()
 
-    retryable = await store.list_retryable_failed_jobs(retry_after_seconds=60, max_attempts=5)
+    retryable = await store.list_retryable_failed_jobs(
+        max_attempts=5,
+        delay_seconds_for=lambda _job: 60,
+    )
     assert retryable == []
 
-    retryable = await store.list_retryable_failed_jobs(retry_after_seconds=5, max_attempts=5)
+    retryable = await store.list_retryable_failed_jobs(
+        max_attempts=5,
+        delay_seconds_for=lambda _job: 5,
+    )
     assert len(retryable) == 1
 
 
