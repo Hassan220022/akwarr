@@ -405,6 +405,7 @@ class DownloadWorker:
             elcinema_id=_elcinema_metadata(movie, "id"),
             elcinema_url=_elcinema_metadata(movie, "url"),
             elcinema_title=_elcinema_metadata(movie, "title"),
+            akwam_url=movie.get("akwam_url"),
         )
         await self.store.set_movie_file(movie["id"], str(final), has_file=True)
 
@@ -446,6 +447,7 @@ class DownloadWorker:
             elcinema_id=_elcinema_metadata(series, "id"),
             elcinema_url=_elcinema_metadata(series, "url"),
             elcinema_title=_elcinema_metadata(series, "title"),
+            akwam_url=series.get("akwam_url"),
         )
         await self.store.set_episode_file(episode["id"], str(final), has_file=True)
         if not series.get("path"):

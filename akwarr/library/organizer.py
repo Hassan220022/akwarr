@@ -10,8 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from akwarr.config import Settings
+from akwarr.core.tmdb import TMDBClient
+from akwarr.library import artwork as art
 from akwarr.library import metadata as meta
 from akwarr.library.jellyfin import JellyfinClient
+from akwarr.scraper.akwam import AkwamScraper
 
 INVALID_CHARS = re.compile(r'[\\/:*?"<>|]')
 logger = logging.getLogger(__name__)
@@ -37,6 +40,8 @@ class MediaOrganizer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.jellyfin = JellyfinClient(settings)
+        self.tmdb = TMDBClient(settings)
+        self.scraper = AkwamScraper(settings)
 
     def ensure_roots(self) -> None:
         for path in (
@@ -110,12 +115,35 @@ class MediaOrganizer:
         imdb_id: str | None,
         poster_url: str | None,
         fanart_url: str | None,
+        akwam_url: str | None = None,
         elcinema_id: str | None = None,
         elcinema_url: str | None = None,
         elcinema_title: str | None = None,
     ) -> Path:
         plan.folder.mkdir(parents=True, exist_ok=True, mode=self.settings.dir_mode)
         self._move_file(staging_file, plan.video)
+
+        poster_file: str | None = None
+        fanart_file: str | None = None
+        if self.settings.save_akwam_artwork:
+            resolved_poster, resolved_fanart = await art.resolve_movie_artwork_urls(
+                poster_url=poster_url,
+                fanart_url=fanart_url,
+                tmdb_id=tmdb_id,
+                akwam_url=akwam_url,
+                tmdb=self.tmdb,
+                scraper=self.scraper,
+            )
+            await art.ensure_movie_artwork(
+                plan.folder,
+                poster_url=resolved_poster,
+                fanart_url=resolved_fanart,
+            )
+            if plan.poster.exists():
+                poster_file = plan.poster.name
+            if plan.fanart.exists():
+                fanart_file = plan.fanart.name
+
         meta.write_movie_nfo(
             plan.nfo,
             title=title,
@@ -128,10 +156,9 @@ class MediaOrganizer:
             elcinema_title=elcinema_title,
             overview=overview,
             language=self.settings.metadata_language,
+            poster_file=poster_file,
+            fanart_file=fanart_file,
         )
-        if self.settings.save_akwam_artwork:
-            await meta.download_image(poster_url or "", plan.poster)
-            await meta.download_image(fanart_url or poster_url or "", plan.fanart)
         await self.jellyfin.refresh_path(str(plan.folder))
         return plan.video
 
@@ -151,6 +178,7 @@ class MediaOrganizer:
         episode_title: str,
         poster_url: str | None,
         fanart_url: str | None,
+        akwam_url: str | None = None,
         imdb_id: str | None = None,
         tvdb_id: int | None = None,
         elcinema_id: str | None = None,
@@ -160,6 +188,31 @@ class MediaOrganizer:
         series_folder.mkdir(parents=True, exist_ok=True, mode=self.settings.dir_mode)
         plan.folder.mkdir(parents=True, exist_ok=True, mode=self.settings.dir_mode)
         tvshow_nfo = series_folder / "tvshow.nfo"
+
+        poster_file: str | None = None
+        fanart_file: str | None = None
+        if self.settings.save_akwam_artwork:
+            resolved_poster, resolved_fanart = await art.resolve_show_artwork_urls(
+                poster_url=poster_url,
+                fanart_url=fanart_url,
+                tmdb_id=tmdb_id,
+                akwam_url=akwam_url,
+                tmdb=self.tmdb,
+                scraper=self.scraper,
+            )
+            await art.ensure_series_artwork(
+                series_folder,
+                season=season,
+                poster_url=resolved_poster,
+                fanart_url=resolved_fanart,
+            )
+            poster_path = art.series_poster_path(series_folder)
+            fanart_path = art.series_fanart_path(series_folder)
+            if poster_path.exists():
+                poster_file = poster_path.name
+            if fanart_path.exists():
+                fanart_file = fanart_path.name
+
         if not tvshow_nfo.exists():
             meta.write_tvshow_nfo(
                 tvshow_nfo,
@@ -174,10 +227,11 @@ class MediaOrganizer:
                 elcinema_title=elcinema_title,
                 overview=overview,
                 language=self.settings.metadata_language,
+                poster_file=poster_file,
+                fanart_file=fanart_file,
             )
-            if self.settings.save_akwam_artwork:
-                await meta.download_image(poster_url or "", series_folder / "poster.jpg")
-                await meta.download_image(fanart_url or poster_url or "", series_folder / "fanart.jpg")
+        elif poster_file or fanart_file:
+            meta.patch_nfo_art(tvshow_nfo, poster_file=poster_file, fanart_file=fanart_file)
 
         self._move_file(staging_file, plan.video)
         meta.write_episode_nfo(
@@ -186,6 +240,7 @@ class MediaOrganizer:
             season=season,
             episode=episode,
         )
+        await self.jellyfin.refresh_path(str(series_folder))
         await self.jellyfin.refresh_path(str(plan.folder))
         return plan.video
 

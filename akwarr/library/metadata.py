@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from akwarr.scraper.akwam import is_valid_artwork_url
+
 
 def _indent(elem: ET.Element, level: int = 0) -> None:
     pad = "\n" + "  " * level
@@ -35,6 +37,8 @@ def write_movie_nfo(
     elcinema_title: str | None = None,
     overview: str | None = None,
     language: str = "ar",
+    poster_file: str | None = None,
+    fanart_file: str | None = None,
 ) -> None:
     root = ET.Element("movie")
     ET.SubElement(root, "title").text = title
@@ -51,6 +55,7 @@ def write_movie_nfo(
         imdb = ET.SubElement(root, "uniqueid", attrib={"type": "imdb"})
         imdb.text = imdb_id
     _append_elcinema(root, elcinema_id=elcinema_id, elcinema_url=elcinema_url, elcinema_title=elcinema_title)
+    _append_local_art(root, poster_file=poster_file, fanart_file=fanart_file)
     _indent(root)
     tree = ET.ElementTree(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +76,8 @@ def write_tvshow_nfo(
     elcinema_title: str | None = None,
     overview: str | None = None,
     language: str = "ar",
+    poster_file: str | None = None,
+    fanart_file: str | None = None,
 ) -> None:
     root = ET.Element("tvshow")
     ET.SubElement(root, "title").text = title
@@ -90,10 +97,20 @@ def write_tvshow_nfo(
         tvdb = ET.SubElement(root, "uniqueid", attrib={"type": "tvdb"})
         tvdb.text = str(tvdb_id)
     _append_elcinema(root, elcinema_id=elcinema_id, elcinema_url=elcinema_url, elcinema_title=elcinema_title)
+    _append_local_art(root, poster_file=poster_file, fanart_file=fanart_file)
     _indent(root)
     tree = ET.ElementTree(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+def patch_nfo_art(path: Path, *, poster_file: str | None, fanart_file: str | None) -> None:
+    if not path.exists() or (not poster_file and not fanart_file):
+        return
+    root = ET.parse(path).getroot()
+    _append_local_art(root, poster_file=poster_file, fanart_file=fanart_file, replace=True)
+    _indent(root)
+    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
 
 def write_episode_nfo(
@@ -118,13 +135,15 @@ def write_episode_nfo(
 
 
 async def download_image(url: str, dest: Path) -> bool:
-    if not url:
+    if not is_valid_artwork_url(url):
         return False
     try:
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             r = await client.get(url)
             r.raise_for_status()
             content_type = r.headers.get("content-type", "")
+            if "svg" in content_type.lower():
+                return False
             if "image" not in content_type and len(r.content) < 500:
                 return False
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -132,6 +151,33 @@ async def download_image(url: str, dest: Path) -> bool:
             return True
     except httpx.HTTPError:
         return False
+
+
+def _append_local_art(
+    root: ET.Element,
+    *,
+    poster_file: str | None,
+    fanart_file: str | None,
+    replace: bool = False,
+) -> None:
+    if not poster_file and not fanart_file:
+        return
+    art = root.find("art")
+    if art is not None and replace:
+        root.remove(art)
+        art = None
+    if art is None:
+        art = ET.SubElement(root, "art")
+    if poster_file:
+        poster = art.find("poster")
+        if poster is None:
+            poster = ET.SubElement(art, "poster")
+        poster.text = poster_file
+    if fanart_file:
+        fanart = art.find("fanart")
+        if fanart is None:
+            fanart = ET.SubElement(art, "fanart")
+        fanart.text = fanart_file
 
 
 def _append_elcinema(

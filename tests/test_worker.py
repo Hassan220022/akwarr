@@ -585,4 +585,7 @@ async def test_import_episode_writes_jellyfin_metadata_under_series_root(tmp_pat
     assert root.findtext("elcinemaurl") == "https://elcinema.com/work/2087914"
     assert worker.store.episode_file == (123, str(final), True)
     assert worker.store.series_path == (7, str(settings.series_path / "سيد الناس (2025)"))
-    assert worker.organizer.jellyfin.refreshed == [str(final.parent)]
+    assert worker.organizer.jellyfin.refreshed == [
+        str(settings.series_path / "سيد الناس (2025)"),
+        str(final.parent),
+    ]

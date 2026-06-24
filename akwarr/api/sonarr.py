@@ -20,7 +20,7 @@ from akwarr.core.tmdb import TMDBClient
 from akwarr.core.worker import DownloadWorker
 from akwarr.download.aria2 import Aria2Client
 from akwarr.library.organizer import MediaOrganizer
-from akwarr.scraper.akwam import AkwamScraper
+from akwarr.scraper.akwam import AkwamScraper, is_valid_artwork_url
 from akwarr.scraper.elcinema import ElCinemaScraper
 
 logger = logging.getLogger(__name__)
@@ -250,9 +250,9 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
         try:
             meta = await scraper.fetch_metadata(match.url, kind="series")
             akwam_episodes = meta.episodes
-            if meta.poster:
+            if meta.poster and is_valid_artwork_url(meta.poster):
                 poster = meta.poster
-            if meta.fanart:
+            if meta.fanart and is_valid_artwork_url(meta.fanart):
                 fanart = meta.fanart
             if meta.overview and not overview:
                 overview = meta.overview

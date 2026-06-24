@@ -35,6 +35,21 @@ ARABIC_ORDINALS = {
     "العاشر": 10,
 }
 DIRECT_MEDIA_SUFFIXES = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v"}
+INVALID_ARTWORK_MARKERS = (
+    "logo-white",
+    "/style/assets/",
+    "/assets/images/logo",
+    "favicon",
+)
+
+
+def is_valid_artwork_url(url: str | None) -> bool:
+    if not url:
+        return False
+    lower = url.lower().split("?", 1)[0]
+    if lower.endswith(".svg"):
+        return False
+    return not any(marker in lower for marker in INVALID_ARTWORK_MARKERS)
 
 
 @dataclass
@@ -165,17 +180,16 @@ class AkwamScraper:
         title_el = soup.find("h1") or soup.find("h2")
         title = title_el.get_text(strip=True) if title_el else "Unknown"
 
-        poster = None
-        poster_img = soup.find("img", class_=re.compile(r"poster|img-fluid"))
-        if poster_img and poster_img.get("src"):
-            poster = urljoin(self.base, poster_img["src"]).replace("thumb/260x380/", "")
+        poster = _extract_poster_url(soup, self.base)
 
         fanart = None
         gallery = soup.find("a", attrs={"data-fancybox": re.compile("gallery")})
         if gallery and gallery.get("href"):
             fanart = urljoin(self.base, gallery["href"])
-        elif poster:
+        if not is_valid_artwork_url(fanart) and poster:
             fanart = poster
+        if not is_valid_artwork_url(poster) and is_valid_artwork_url(fanart):
+            poster = fanart
 
         overview = None
         story = soup.find("p", class_=re.compile("story|overview|description"))
@@ -396,6 +410,20 @@ def _find_download_redirect(soup: BeautifulSoup):
 def _is_direct_media_url(url: str) -> bool:
     path = urlparse(url).path.lower()
     return any(path.endswith(suffix) for suffix in DIRECT_MEDIA_SUFFIXES)
+
+
+def _extract_poster_url(soup: BeautifulSoup, base: str) -> str | None:
+    candidates: list[str] = []
+    for img in soup.find_all("img", src=True):
+        src = urljoin(base, img["src"]).replace("thumb/260x380/", "")
+        if not is_valid_artwork_url(src):
+            continue
+        classes = " ".join(img.get("class") or [])
+        if "poster" in classes.lower():
+            return src
+        if "img-fluid" in classes.lower() or "downet" in src.lower():
+            candidates.append(src)
+    return candidates[0] if candidates else None
 
 
 def _parse_episode_number(title: str) -> int | None:
