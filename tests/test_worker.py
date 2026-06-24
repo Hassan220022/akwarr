@@ -96,6 +96,10 @@ class ProcessWorker(DownloadWorker):
     async def _import_job(self, job: dict) -> None:
         self.store.checked.append(job["id"])
 
+    async def _active_download_count(self, jobs: list[dict]) -> int:
+        active_statuses = {JobStatus.DOWNLOADING, JobStatus.IMPORTING}
+        return sum(1 for job in jobs if job["status"] in active_statuses)
+
 
 @pytest.mark.asyncio
 async def test_check_download_uses_aria2_actual_file_path_before_import() -> None:
@@ -148,6 +152,109 @@ async def test_process_jobs_respects_max_active_downloads() -> None:
     assert worker.store.checked == [1]
     assert worker.store.started == [2]
     assert worker.store.requeued == []
+
+
+@pytest.mark.asyncio
+async def test_process_jobs_starts_pending_when_other_downloads_only_waiting_in_aria2() -> None:
+    class WaitingAria2:
+        async def tell_status(self, gid: str) -> dict:
+            if gid == "active-gid":
+                return {"status": "active", "totalLength": "100", "completedLength": "10"}
+            return {"status": "waiting", "totalLength": "0", "completedLength": "0"}
+
+    worker = object.__new__(DownloadWorker)
+    worker.store = FakeProcessStore(
+        [
+            {"id": 1, "status": JobStatus.DOWNLOADING, "aria2_gid": "active-gid"},
+            {"id": 2, "status": JobStatus.DOWNLOADING, "aria2_gid": "waiting-gid"},
+            {"id": 3, "status": JobStatus.PENDING},
+        ]
+    )
+    worker.aria2 = WaitingAria2()
+    worker.settings = SimpleNamespace(
+        max_active_downloads=2,
+        retry_failed_after_seconds=300,
+        retry_transient_after_seconds=60,
+        retry_transient_max_seconds=600,
+        max_retry_attempts=5,
+        monitor_missing_interval_seconds=3600,
+        stale_waiting_seconds=120,
+        is_sonarr=True,
+    )
+
+    async def _start_job(job: dict) -> None:
+        worker.store.started.append(job["id"])
+
+    async def _noop(*_args, **_kwargs) -> None:
+        return None
+
+    worker._start_job = _start_job  # type: ignore[method-assign]
+    worker._check_download = _noop  # type: ignore[method-assign]
+    worker._requeue_failed_jobs = _noop  # type: ignore[method-assign]
+    worker._maybe_sync_missing_releases = _noop  # type: ignore[method-assign]
+
+    await worker._process_jobs()
+
+    assert worker.store.started == [3]
+
+
+class RequeueStore(FakeStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.requeued: list[int] = []
+
+    async def requeue_job(self, job_id: int) -> None:
+        self.requeued.append(job_id)
+
+
+class ForceRemoveAria2:
+    def __init__(self) -> None:
+        self.removed: list[str] = []
+
+    async def tell_status(self, gid: str) -> dict:
+        raise RuntimeError(f"GID {gid} is not found")
+
+    async def force_remove(self, gid: str) -> None:
+        self.removed.append(gid)
+
+
+@pytest.mark.asyncio
+async def test_check_download_requeues_orphaned_aria2_gid() -> None:
+    worker = object.__new__(DownloadWorker)
+    worker.aria2 = ForceRemoveAria2()
+    worker.store = RequeueStore()
+    worker.settings = SimpleNamespace(stale_waiting_seconds=120)
+
+    await worker._check_download({"id": 12, "aria2_gid": "deadbeef"})
+
+    assert worker.aria2.removed == ["deadbeef"]
+    assert worker.store.requeued == [12]
+
+
+class StaleWaitingAria2:
+    async def tell_status(self, gid: str) -> dict:
+        return {"status": "waiting", "totalLength": "0", "completedLength": "0"}
+
+    async def force_remove(self, gid: str) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_check_download_requeues_stale_waiting_download() -> None:
+    worker = object.__new__(DownloadWorker)
+    worker.aria2 = StaleWaitingAria2()
+    worker.store = RequeueStore()
+    worker.settings = SimpleNamespace(stale_waiting_seconds=1800)
+
+    await worker._check_download(
+        {
+            "id": 15,
+            "aria2_gid": "waiting-gid",
+            "created": "2020-01-01T00:00:00+00:00",
+        }
+    )
+
+    assert worker.store.requeued == [15]
 
 
 @pytest.mark.asyncio

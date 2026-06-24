@@ -33,6 +33,10 @@ config/
 .omx/
 *.swp
 
+# Local tooling
+.claude/command-history.log
+uv.lock
+
 # OS
 .DS_Store
 Thumbs.db

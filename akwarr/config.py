@@ -49,6 +49,7 @@ class Settings(BaseSettings):
 
     worker_poll_seconds: int = Field(default=10, alias="WORKER_POLL_SECONDS")
     max_active_downloads: int = Field(default=3, alias="MAX_ACTIVE_DOWNLOADS")
+    stale_waiting_seconds: int = Field(default=1800, alias="STALE_WAITING_SECONDS")
     retry_failed_after_seconds: int = Field(default=300, alias="RETRY_FAILED_AFTER_SECONDS")
     retry_transient_after_seconds: int = Field(default=60, alias="RETRY_TRANSIENT_AFTER_SECONDS")
     retry_transient_max_seconds: int = Field(default=600, alias="RETRY_TRANSIENT_MAX_SECONDS")

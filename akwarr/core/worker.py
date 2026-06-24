@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from akwarr.config import Settings
@@ -44,15 +45,15 @@ class DownloadWorker:
         await self._requeue_failed_jobs()
         await self._maybe_sync_missing_releases()
         jobs = await self.store.list_pending_jobs()
-        active_statuses = {JobStatus.DOWNLOADING, JobStatus.IMPORTING}
-        active_count = sum(1 for job in jobs if job["status"] in active_statuses)
-        max_active = max(int(self.settings.max_active_downloads), 1)
         for job in jobs:
             status = job["status"]
             if status == JobStatus.DOWNLOADING:
                 await self._check_download(job)
             elif status == JobStatus.IMPORTING:
                 await self._import_job(job)
+        jobs = await self.store.list_pending_jobs()
+        active_count = await self._active_download_count(jobs)
+        max_active = max(int(self.settings.max_active_downloads), 1)
         for job in jobs:
             if job["status"] != JobStatus.PENDING:
                 continue
@@ -250,6 +251,12 @@ class DownloadWorker:
         try:
             status = await self.aria2.tell_status(gid)
             state = status.get("status")
+            if state == "waiting" and self._is_stale_waiting(job, status):
+                await self._release_stalled_download(
+                    job,
+                    reason="stalled in aria2 waiting queue with no metadata",
+                )
+                return
             actual_path = self._aria2_file_path(status)
             staging_path = str(job.get("staging_path") or "")
             if actual_path and self._is_legacy_staging_path(actual_path):
@@ -272,7 +279,74 @@ class DownloadWorker:
                     error=status.get("errorMessage", "aria2 error"),
                 )
         except Exception as exc:
+            if self._is_orphan_gid_error(exc):
+                await self._release_stalled_download(job, reason=str(exc))
+                return
             await self.store.update_job(job["id"], status=JobStatus.FAILED, error=str(exc))
+
+    async def _active_download_count(self, jobs: list[dict]) -> int:
+        count = 0
+        for job in jobs:
+            status = job.get("status")
+            if status == JobStatus.IMPORTING:
+                count += 1
+                continue
+            if status != JobStatus.DOWNLOADING:
+                continue
+            gid = job.get("aria2_gid")
+            if not gid:
+                count += 1
+                continue
+            try:
+                aria2_status = await self.aria2.tell_status(str(gid))
+            except Exception as exc:
+                if self._is_orphan_gid_error(exc):
+                    continue
+                count += 1
+                continue
+            state = aria2_status.get("status")
+            if state in {"active", "paused"}:
+                count += 1
+        return count
+
+    async def _release_stalled_download(self, job: dict, *, reason: str) -> None:
+        gid = job.get("aria2_gid")
+        if gid:
+            try:
+                await self.aria2.force_remove(str(gid))
+            except Exception:
+                logger.warning("Failed to remove aria2 gid %s for job %s", gid, job["id"])
+        logger.info("Requeuing stalled job %s: %s", job["id"], reason)
+        await self.store.requeue_job(job["id"])
+
+    @staticmethod
+    def _is_orphan_gid_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "is not found" in message or "not found" in message
+
+    def _is_stale_waiting(self, job: dict, status: dict) -> bool:
+        if status.get("status") != "waiting":
+            return False
+        if self._aria2_int(status.get("totalLength")) > 0:
+            return False
+        if self._aria2_int(status.get("completedLength")) > 0:
+            return False
+        stale_after = max(int(self.settings.stale_waiting_seconds), 300)
+        created = job.get("created")
+        if not created:
+            return False
+        parsed = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        age = (datetime.now(UTC) - parsed.astimezone(UTC)).total_seconds()
+        return age >= stale_after
+
+    @staticmethod
+    def _aria2_int(value: object) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
     @staticmethod
     def _aria2_file_path(status: dict) -> str | None:
