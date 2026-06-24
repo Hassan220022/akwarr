@@ -7,6 +7,7 @@ def test_is_transient_error_matches_connection_failures() -> None:
     assert is_transient_error("All connection attempts failed")
     assert is_transient_error("Temporary failure in name resolution")
     assert is_transient_error("ConnectError: connection refused")
+    assert is_transient_error("Download aborted.")
 
 
 def test_is_transient_error_rejects_permanent_failures() -> None:

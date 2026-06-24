@@ -16,6 +16,8 @@ _TRANSIENT_ERROR_MARKERS = (
     "connect error",
     "server disconnected",
     "remote protocol error",
+    # aria2 reports this when a download is removed (container restart, forceRemove, etc.)
+    "download aborted",
 )
 
 
