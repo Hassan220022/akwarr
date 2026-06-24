@@ -208,6 +208,8 @@ def create_admin_router(get_store: Callable[[], Store]) -> APIRouter:
                     "has_file": False,
                 }
             )
+            if ep_record.get("has_file"):
+                continue
             plan = organizer.episode_plan(
                 series_title=body.title,
                 year=body.year,

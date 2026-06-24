@@ -69,9 +69,7 @@ async def test_store_init_migrates_legacy_arabic_media_paths(tmp_path):
 
     assert movie_path == str(tmp_path / "Movie" / "Arabic" / "Film" / "Film.mkv")
     assert series_path == str(tmp_path / "Serries" / "Arabic" / "Show")
-    assert episode_path == str(
-        tmp_path / "Serries" / "Arabic" / "Show" / "Season 01" / "Show - S01E01.mkv"
-    )
+    assert episode_path == str(tmp_path / "Serries" / "Arabic" / "Show" / "Season 01" / "Show - S01E01.mkv")
     assert staging_path == str(tmp_path / "Download" / "akwarr-staging" / "movie.mkv")
     assert dest_path == str(tmp_path / "Movie" / "Arabic" / "Film" / "Film.mkv")
 
@@ -135,9 +133,7 @@ async def test_create_job_reuses_active_job_for_same_media_ref(tmp_path):
     jobs = await store.list_pending_jobs()
 
     assert second == first
-    assert [(job["kind"], job["ref_id"], job["status"]) for job in jobs] == [
-        ("episode", 12, JobStatus.PENDING)
-    ]
+    assert [(job["kind"], job["ref_id"], job["status"]) for job in jobs] == [("episode", 12, JobStatus.PENDING)]
 
 
 @pytest.mark.asyncio
@@ -154,6 +150,114 @@ async def test_create_job_reuses_paused_job_for_same_media_ref(tmp_path):
     second = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E12.mkv")
 
     assert second == first
+
+
+@pytest.mark.asyncio
+async def test_create_job_reuses_failed_job_for_same_media_ref(tmp_path):
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    first = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E12.mkv")
+    await store.update_job(first, status=JobStatus.FAILED, error="temporary")
+    second = await store.create_job("episode", 12, "/media/Serries/Arabic/Show/Season 01/Show - S01E13.mkv")
+
+    jobs = await store.list_jobs()
+    active = [job for job in jobs if job["status"] != JobStatus.DELETED]
+
+    assert second == first
+    assert len(active) == 1
+    assert active[0]["status"] == JobStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_create_job_skips_when_episode_has_file(tmp_path):
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    series = await store.add_series(
+        {
+            "tmdb_id": 1,
+            "title": "Show",
+            "root_folder_path": str(tmp_path / "Serries" / "Arabic"),
+        }
+    )
+    episode = await store.upsert_episode(
+        {
+            "series_id": series["id"],
+            "season_number": 1,
+            "episode_number": 1,
+            "title": "Pilot",
+            "has_file": True,
+            "path": "/media/ep.mkv",
+        }
+    )
+
+    job_id = await store.create_job("episode", episode["id"], "/media/ep.mkv")
+
+    assert job_id == 0
+    assert await store.list_pending_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_create_job_skips_when_movie_has_file(tmp_path):
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    movie = await store.add_movie(
+        {
+            "tmdb_id": 42,
+            "title": "Film",
+            "root_folder_path": str(tmp_path / "Movie" / "Arabic"),
+            "has_file": True,
+            "path": "/media/film.mkv",
+        }
+    )
+
+    job_id = await store.create_job("movie", movie["id"], "/media/film.mkv")
+
+    assert job_id == 0
+    assert await store.list_pending_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_init_dedupes_active_jobs_before_unique_index(tmp_path):
+    from akwarr.core.store import utcnow
+
+    store = Store(
+        tmp_path / "akwarr.db",
+        movies_path=tmp_path / "Movie" / "Arabic",
+        series_path=tmp_path / "Serries" / "Arabic",
+    )
+    await store.init()
+
+    first = await store.create_job("episode", 12, "/media/ep-a.mkv")
+
+    async with aiosqlite.connect(store.db_path) as db:
+        await db.execute("DROP INDEX IF EXISTS idx_jobs_active_kind_ref")
+        await db.execute(
+            "INSERT INTO jobs (kind, ref_id, status, dest_path, created, updated) VALUES (?, ?, ?, ?, ?, ?)",
+            ("episode", 12, JobStatus.PENDING, "/media/ep-c.mkv", utcnow(), utcnow()),
+        )
+        await db.commit()
+
+    await store.init()
+
+    jobs = await store.list_jobs()
+    active = [job for job in jobs if job["status"] in store._ACTIVE_JOB_STATUSES]
+    assert len(active) == 1
+    assert active[0]["id"] == first
 
 
 @pytest.mark.asyncio
@@ -207,7 +311,10 @@ async def test_requeue_job_resets_to_pending_and_increments_retry_count(tmp_path
 
     job_id = await store.create_job("episode", 50, "/media/ep.mkv")
     await store.update_job(
-        job_id, status=JobStatus.FAILED, error="No download links", aria2_gid="gid-x",
+        job_id,
+        status=JobStatus.FAILED,
+        error="No download links",
+        aria2_gid="gid-x",
         staging_path="/tmp/staging.mkv",
     )
 

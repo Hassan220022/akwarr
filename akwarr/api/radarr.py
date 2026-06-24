@@ -227,7 +227,7 @@ async def add_movie(body: MovieAddBody) -> dict[str, Any]:
         }
     )
 
-    if akwam_url and body.addOptions.get("searchForMovie", True):
+    if akwam_url and body.addOptions.get("searchForMovie", True) and not record.get("has_file"):
         plan = MediaOrganizer(settings).movie_plan(title=title, year=year, quality="720p")
         job_id = await s.create_job("movie", record["id"], str(plan.video))
         logger.info("Queued movie job %s for TMDB %s", job_id, body.tmdbId)

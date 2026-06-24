@@ -126,6 +126,7 @@ class Store:
             )
             await self._migrate_legacy_media_paths(db)
             await self._ensure_jobs_retry_count(db)
+            await self._ensure_jobs_active_ref_index(db)
             await db.commit()
 
     async def _migrate_legacy_media_paths(self, db: aiosqlite.Connection) -> None:
@@ -156,6 +157,58 @@ class Store:
         columns = {row[1] for row in await cur.fetchall()}
         if "retry_count" not in columns:
             await db.execute("ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+
+    async def _ensure_jobs_active_ref_index(self, db: aiosqlite.Connection) -> None:
+        cur = await db.execute("PRAGMA table_info(jobs)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if not {"kind", "ref_id", "status"}.issubset(columns):
+            return
+        await self._dedupe_active_jobs(db)
+        await db.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_kind_ref
+            ON jobs (kind, ref_id)
+            WHERE status IN ('pending', 'downloading', 'paused', 'importing', 'failed')
+            """
+        )
+
+    async def _dedupe_active_jobs(self, db: aiosqlite.Connection) -> None:
+        status_priority = {
+            JobStatus.DOWNLOADING: 0,
+            JobStatus.IMPORTING: 1,
+            JobStatus.PENDING: 2,
+            JobStatus.PAUSED: 3,
+            JobStatus.FAILED: 4,
+        }
+        placeholders = ", ".join("?" for _ in self._ACTIVE_JOB_STATUSES)
+        cur = await db.execute(
+            f"""
+            SELECT kind, ref_id
+            FROM jobs
+            WHERE status IN ({placeholders})
+            GROUP BY kind, ref_id
+            HAVING COUNT(*) > 1
+            """,
+            self._ACTIVE_JOB_STATUSES,
+        )
+        duplicates = await cur.fetchall()
+        now = utcnow()
+        for kind, ref_id in duplicates:
+            cur = await db.execute(
+                f"""
+                SELECT id, status FROM jobs
+                WHERE kind = ? AND ref_id = ? AND status IN ({placeholders})
+                ORDER BY id
+                """,
+                (kind, ref_id, *self._ACTIVE_JOB_STATUSES),
+            )
+            jobs = await cur.fetchall()
+            jobs.sort(key=lambda row: (status_priority.get(row[1], 99), row[0]))
+            for job_id, _ in jobs[1:]:
+                await db.execute(
+                    "UPDATE jobs SET status = ?, updated = ? WHERE id = ?",
+                    (JobStatus.DELETED, now, job_id),
+                )
 
     # ── Movies ──
 
@@ -443,44 +496,63 @@ class Store:
     async def has_blocking_job(self, kind: str, ref_id: int) -> bool:
         """True when a job already exists and should not be duplicated by sync."""
         async with aiosqlite.connect(self.db_path) as db:
-            cur = await db.execute(
-                """
-                SELECT 1 FROM jobs
-                WHERE kind = ?
-                  AND ref_id = ?
-                  AND status IN ('pending', 'downloading', 'paused', 'importing', 'failed')
-                LIMIT 1
-                """,
-                (kind, ref_id),
-            )
-            return (await cur.fetchone()) is not None
+            return (await self._find_active_job_id(db, kind, ref_id)) is not None
+
+    _ACTIVE_JOB_STATUSES = ("pending", "downloading", "paused", "importing", "failed")
+
+    async def _media_has_file(self, db: aiosqlite.Connection, kind: str, ref_id: int) -> bool:
+        if kind == "episode":
+            cur = await db.execute("SELECT has_file FROM episodes WHERE id = ?", (ref_id,))
+        elif kind == "movie":
+            cur = await db.execute("SELECT has_file FROM movies WHERE id = ?", (ref_id,))
+        else:
+            return False
+        row = await cur.fetchone()
+        return bool(row and row[0])
+
+    async def _find_active_job_id(self, db: aiosqlite.Connection, kind: str, ref_id: int) -> int | None:
+        placeholders = ", ".join("?" for _ in self._ACTIVE_JOB_STATUSES)
+        cur = await db.execute(
+            f"""
+            SELECT id FROM jobs
+            WHERE kind = ?
+              AND ref_id = ?
+              AND status IN ({placeholders})
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (kind, ref_id, *self._ACTIVE_JOB_STATUSES),
+        )
+        existing = await cur.fetchone()
+        return int(existing[0]) if existing else None
 
     async def create_job(self, kind: str, ref_id: int, dest_path: str) -> int:
         now = utcnow()
         async with aiosqlite.connect(self.db_path) as db:
-            cur = await db.execute(
-                """
-                SELECT id FROM jobs
-                WHERE kind = ?
-                  AND ref_id = ?
-                  AND status IN ('pending', 'downloading', 'paused', 'importing')
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (kind, ref_id),
-            )
-            existing = await cur.fetchone()
-            if existing:
-                return int(existing[0])
-            cur = await db.execute(
-                """
-                INSERT INTO jobs (kind, ref_id, status, dest_path, created, updated)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (kind, ref_id, JobStatus.PENDING, dest_path, now, now),
-            )
-            await db.commit()
-            return cur.lastrowid or 0
+            await db.execute("BEGIN IMMEDIATE")
+            if await self._media_has_file(db, kind, ref_id):
+                await db.commit()
+                return 0
+
+            existing_id = await self._find_active_job_id(db, kind, ref_id)
+            if existing_id is not None:
+                await db.commit()
+                return existing_id
+
+            try:
+                cur = await db.execute(
+                    """
+                    INSERT INTO jobs (kind, ref_id, status, dest_path, created, updated)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (kind, ref_id, JobStatus.PENDING, dest_path, now, now),
+                )
+                await db.commit()
+                return cur.lastrowid or 0
+            except aiosqlite.IntegrityError:
+                existing_id = await self._find_active_job_id(db, kind, ref_id)
+                await db.commit()
+                return existing_id or 0
 
     async def list_pending_jobs(self) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -494,9 +566,7 @@ class Store:
             )
             return [dict(r) for r in await cur.fetchall()]
 
-    async def list_retryable_failed_jobs(
-        self, *, retry_after_seconds: int, max_attempts: int
-    ) -> list[dict[str, Any]]:
+    async def list_retryable_failed_jobs(self, *, retry_after_seconds: int, max_attempts: int) -> list[dict[str, Any]]:
         """Failed jobs eligible for retry: updated long enough ago and under max attempts."""
         cutoff = (datetime.now(UTC) - timedelta(seconds=retry_after_seconds)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:

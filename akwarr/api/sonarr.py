@@ -312,6 +312,8 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
                     "has_file": False,
                 }
             )
+            if ep_record.get("has_file"):
+                continue
             plan = organizer.episode_plan(
                 series_title=title,
                 year=year,
