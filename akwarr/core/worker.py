@@ -418,6 +418,29 @@ class DownloadWorker:
                 await self.aria2.force_remove(str(gid))
             except Exception:
                 logger.warning("Failed to remove aria2 gid %s for job %s", gid, job["id"])
+
+        # Enforce the retry cap on the stalled-waiting path too: requeue_job
+        # bumps retry_count unconditionally, and stalled downloads never pass
+        # through status=failed (so list_retryable_failed_jobs' max_attempts
+        # guard never sees them). Without this cap a download that can never
+        # reach aria2 metadata spins forever, retrying every stale_waiting
+        # interval (observed retry_count > 100 in production).
+        max_attempts = max(int(self.settings.max_retry_attempts), 1)
+        retry_count = int(job.get("retry_count") or 0)
+        if retry_count >= max_attempts:
+            logger.warning(
+                "Marking job %s failed after %s stalled requeues: %s",
+                job["id"],
+                retry_count,
+                reason,
+            )
+            await self.store.update_job(
+                job["id"],
+                status=JobStatus.FAILED,
+                error=f"stalled download exhausted {retry_count} retries: {reason}",
+            )
+            return
+
         logger.info("Requeuing stalled job %s: %s", job["id"], reason)
         await self.store.requeue_job(job["id"])
 

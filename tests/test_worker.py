@@ -224,9 +224,9 @@ async def test_check_download_requeues_orphaned_aria2_gid() -> None:
     worker = object.__new__(DownloadWorker)
     worker.aria2 = ForceRemoveAria2()
     worker.store = RequeueStore()
-    worker.settings = SimpleNamespace(stale_waiting_seconds=120)
+    worker.settings = SimpleNamespace(stale_waiting_seconds=120, max_retry_attempts=5)
 
-    await worker._check_download({"id": 12, "aria2_gid": "deadbeef"})
+    await worker._check_download({"id": 12, "aria2_gid": "deadbeef", "retry_count": 0})
 
     assert worker.aria2.removed == ["deadbeef"]
     assert worker.store.requeued == [12]
@@ -245,12 +245,13 @@ async def test_check_download_requeues_stale_waiting_download() -> None:
     worker = object.__new__(DownloadWorker)
     worker.aria2 = StaleWaitingAria2()
     worker.store = RequeueStore()
-    worker.settings = SimpleNamespace(stale_waiting_seconds=1800)
+    worker.settings = SimpleNamespace(stale_waiting_seconds=1800, max_retry_attempts=5)
 
     await worker._check_download(
         {
             "id": 15,
             "aria2_gid": "waiting-gid",
+            "retry_count": 0,
             "created": "2020-01-01T00:00:00+00:00",
             "updated": "2020-01-01T00:00:00+00:00",
         }
@@ -276,6 +277,60 @@ async def test_check_download_does_not_requeue_fresh_waiting_after_requeue() -> 
     )
 
     assert worker.store.requeued == []
+
+
+@pytest.mark.asyncio
+async def test_check_download_fails_stalled_waiting_after_max_retries() -> None:
+    """Stalled downloads at max_retry_attempts are marked failed, not requeued forever."""
+    worker = object.__new__(DownloadWorker)
+    worker.aria2 = StaleWaitingAria2()
+    worker.store = RequeueStore()
+    worker.settings = SimpleNamespace(stale_waiting_seconds=1800, max_retry_attempts=5)
+
+    await worker._check_download(
+        {
+            "id": 17,
+            "aria2_gid": "waiting-gid",
+            "retry_count": 5,
+            "created": "2020-01-01T00:00:00+00:00",
+            "updated": "2020-01-01T00:00:00+00:00",
+        }
+    )
+
+    # Must NOT requeue - this is the production bug we are fixing.
+    assert worker.store.requeued == []
+    # Must be marked failed with an explanatory error.
+    assert worker.store.updates == [
+        (
+            17,
+            {
+                "status": JobStatus.FAILED,
+                "error": "stalled download exhausted 5 retries: stalled in aria2 waiting queue with no metadata",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_check_download_requeues_stalled_waiting_below_max_retries() -> None:
+    """Stalled downloads below max_retry_attempts still requeue (regression guard for the cap)."""
+    worker = object.__new__(DownloadWorker)
+    worker.aria2 = StaleWaitingAria2()
+    worker.store = RequeueStore()
+    worker.settings = SimpleNamespace(stale_waiting_seconds=1800, max_retry_attempts=5)
+
+    await worker._check_download(
+        {
+            "id": 18,
+            "aria2_gid": "waiting-gid",
+            "retry_count": 4,
+            "created": "2020-01-01T00:00:00+00:00",
+            "updated": "2020-01-01T00:00:00+00:00",
+        }
+    )
+
+    assert worker.store.requeued == [18]
+    assert worker.store.updates == []
 
 
 @pytest.mark.asyncio
