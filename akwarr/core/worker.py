@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from akwarr.config import Settings
+from akwarr.core.quality import pick_order_for_quality, quality_for_profile_id
 from akwarr.core.retry import retry_delay_seconds
 from akwarr.core.store import JobStatus, Store
 from akwarr.core.tmdb import TMDBClient
@@ -208,13 +209,28 @@ class DownloadWorker:
             return Path(series["path"])
         return self.organizer.series_folder(title=series["title"], year=series.get("year"))
 
+    def _movie_quality(self, movie: dict) -> str:
+        return quality_for_profile_id(int(movie.get("quality_profile_id") or 1), self.settings)
+
+    def _series_quality(self, series: dict) -> str:
+        return quality_for_profile_id(int(series.get("quality_profile_id") or 1), self.settings)
+
+    def _job_quality(self, job: dict, *, movie: dict | None = None, series: dict | None = None) -> str:
+        if job.get("quality"):
+            return str(job["quality"])
+        if movie is not None:
+            return self._movie_quality(movie)
+        if series is not None:
+            return self._series_quality(series)
+        return quality_for_profile_id(1, self.settings)
+
     def _movie_folder(self, movie: dict) -> Path:
         if movie.get("path"):
             return Path(movie["path"]).parent
         return self.organizer.movie_plan(
             title=movie["title"],
             year=movie.get("year"),
-            quality="720p",
+            quality=self._movie_quality(movie),
         ).folder
 
     async def _sync_missing_series_episodes(self) -> None:
@@ -252,9 +268,14 @@ class DownloadWorker:
                     season=season,
                     episode=ep.number,
                     episode_title=ep.title,
-                    quality="720p",
+                    quality=self._series_quality(series),
                 )
-                job_id = await self.store.create_job("episode", ep_record["id"], str(plan.video))
+                job_id = await self.store.create_job(
+                    "episode",
+                    ep_record["id"],
+                    str(plan.video),
+                    quality=self._series_quality(series),
+                )
                 logger.info(
                     "Queued missing episode S%02dE%02d for %s (job %s)",
                     season,
@@ -280,9 +301,14 @@ class DownloadWorker:
                 akwam_url = match.url
                 await self.store.update_movie_akwam(movie["id"], akwam_url, match.poster, None)
             plan = self.organizer.movie_plan(
-                title=movie["title"], year=movie.get("year"), quality="720p"
+                title=movie["title"], year=movie.get("year"), quality=self._movie_quality(movie)
             )
-            job_id = await self.store.create_job("movie", movie["id"], str(plan.video))
+            job_id = await self.store.create_job(
+                "movie",
+                movie["id"],
+                str(plan.video),
+                quality=self._movie_quality(movie),
+            )
             logger.info("Queued missing movie %s (job %s)", movie["title"], job_id)
 
     async def _start_job(self, job: dict) -> None:
@@ -307,7 +333,11 @@ class DownloadWorker:
                     await self.store.update_job(job_id, status=JobStatus.FAILED, error="no akwam url")
                     return
                 meta = await self.scraper.fetch_metadata(movie["akwam_url"], kind="movie")
-                quality, link = await self.scraper.pick_download(meta)
+                requested = self._movie_quality(movie)
+                quality, link = await self.scraper.pick_download(
+                    meta,
+                    qualities=pick_order_for_quality(requested, self.settings),
+                )
                 direct = await self.scraper.resolve_direct_url(link)
                 staging = self.organizer.staging_dir()
                 ext = MediaOrganizer.extension_from_url(direct)
@@ -319,13 +349,22 @@ class DownloadWorker:
                     aria2_gid=gid,
                     staging_path=str(staging / filename),
                     error="",
+                    quality=quality,
                 )
             elif kind == "episode":
                 episode = await self.store.get_episode(ref_id)
                 if not episode or not episode.get("akwam_url"):
                     await self.store.update_job(job_id, status=JobStatus.FAILED, error="episode not found")
                     return
-                quality, direct = await self.scraper.episode_download_url(episode["akwam_url"])
+                series = await self.store.get_series(episode["series_id"])
+                if not series:
+                    await self.store.update_job(job_id, status=JobStatus.FAILED, error="series not found")
+                    return
+                requested = self._series_quality(series)
+                quality, direct = await self.scraper.episode_download_url(
+                    episode["akwam_url"],
+                    qualities=pick_order_for_quality(requested, self.settings),
+                )
                 staging = self.organizer.staging_dir()
                 ext = MediaOrganizer.extension_from_url(direct)
                 filename = Aria2Client.safe_filename(
@@ -338,6 +377,7 @@ class DownloadWorker:
                     aria2_gid=gid,
                     staging_path=str(staging / filename),
                     error="",
+                    quality=quality,
                 )
             else:
                 await self.store.update_job(job_id, status=JobStatus.FAILED, error=f"unknown kind {kind}")
@@ -510,7 +550,7 @@ class DownloadWorker:
         movie = await self.store.get_movie(job["ref_id"])
         if not movie:
             raise RuntimeError("movie missing")
-        quality = "720p"
+        quality = self._job_quality(job, movie=movie)
         plan = self.organizer.movie_plan(
             title=movie["title"],
             year=movie.get("year"),
@@ -543,7 +583,7 @@ class DownloadWorker:
         if not series:
             raise RuntimeError("series missing")
 
-        quality = "720p"
+        quality = self._job_quality(job, series=series)
         plan = self.organizer.episode_plan(
             series_title=series["title"],
             year=series.get("year"),

@@ -139,6 +139,7 @@ class Store:
             await self._migrate_legacy_media_paths(db)
             await self._sanitize_invalid_artwork_urls(db)
             await self._ensure_jobs_retry_count(db)
+            await self._ensure_jobs_quality(db)
             await self._ensure_jobs_active_ref_index(db)
             await db.commit()
 
@@ -188,6 +189,12 @@ class Store:
         columns = {row[1] for row in await cur.fetchall()}
         if "retry_count" not in columns:
             await db.execute("ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+
+    async def _ensure_jobs_quality(self, db: aiosqlite.Connection) -> None:
+        cur = await db.execute("PRAGMA table_info(jobs)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "quality" not in columns:
+            await db.execute("ALTER TABLE jobs ADD COLUMN quality TEXT")
 
     async def _ensure_jobs_active_ref_index(self, db: aiosqlite.Connection) -> None:
         cur = await db.execute("PRAGMA table_info(jobs)")
@@ -598,7 +605,14 @@ class Store:
         existing = await cur.fetchone()
         return int(existing[0]) if existing else None
 
-    async def create_job(self, kind: str, ref_id: int, dest_path: str) -> int:
+    async def create_job(
+        self,
+        kind: str,
+        ref_id: int,
+        dest_path: str,
+        *,
+        quality: str | None = None,
+    ) -> int:
         now = utcnow()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -618,10 +632,10 @@ class Store:
             try:
                 cur = await db.execute(
                     """
-                    INSERT INTO jobs (kind, ref_id, status, dest_path, created, updated)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO jobs (kind, ref_id, status, dest_path, quality, created, updated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (kind, ref_id, JobStatus.PENDING, dest_path, now, now),
+                    (kind, ref_id, JobStatus.PENDING, dest_path, quality, now, now),
                 )
                 await db.commit()
                 return cur.lastrowid or 0
@@ -710,6 +724,7 @@ class Store:
         aria2_gid: str | None = None,
         staging_path: str | None = None,
         error: str | None = None,
+        quality: str | None = None,
     ) -> None:
         fields: list[str] = ["updated = ?"]
         values: list[Any] = [utcnow()]
@@ -725,6 +740,9 @@ class Store:
         if error is not None:
             fields.append("error = ?")
             values.append(error)
+        if quality is not None:
+            fields.append("quality = ?")
+            values.append(quality)
         values.append(job_id)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", values)

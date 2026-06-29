@@ -880,7 +880,7 @@ async def test_sonarr_add_series_creates_unique_episode_jobs_for_jellyseerr_sear
             captured["episodes"].append(episode)
             return episode
 
-        async def create_job(self, kind, ref_id, dest_path):
+        async def create_job(self, kind, ref_id, dest_path, *, quality=None):
             captured["jobs"].append((kind, ref_id, dest_path))
             return len(captured["jobs"])
 
@@ -1151,7 +1151,7 @@ async def test_akwam_series_download_endpoint_queues_selected_episodes(
             captured["episodes"].append(episode)
             return episode
 
-        async def create_job(self, kind, ref_id, dest_path):
+        async def create_job(self, kind, ref_id, dest_path, *, quality=None):
             captured["jobs"].append((kind, ref_id, dest_path))
             return len(captured["jobs"])
 

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from akwarr.api.auth import verify_api_key
 from akwarr.config import get_settings
+from akwarr.core.quality import quality_for_profile_id
 from akwarr.core.store import JobStatus, Store
 from akwarr.download.aria2 import Aria2Client
 from akwarr.library.organizer import MediaOrganizer
@@ -215,15 +216,16 @@ def create_admin_router(get_store: Callable[[], Store]) -> APIRouter:
             )
             if ep_record.get("has_file"):
                 continue
+            quality = quality_for_profile_id(series.get("quality_profile_id", 1), settings)
             plan = organizer.episode_plan(
                 series_title=body.title,
                 year=body.year,
                 season=season,
                 episode=episode.number,
                 episode_title=episode.title,
-                quality="720p",
+                quality=quality,
             )
-            job_id = await store.create_job("episode", ep_record["id"], str(plan.video))
+            job_id = await store.create_job("episode", ep_record["id"], str(plan.video), quality=quality)
             queued.append(
                 {
                     "jobId": job_id,

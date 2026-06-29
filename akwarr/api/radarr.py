@@ -15,6 +15,7 @@ from akwarr.api.auth import verify_api_key
 from akwarr.api.matching import best_arabic_akwam_match
 from akwarr.api.queue import queue_payload
 from akwarr.config import get_settings
+from akwarr.core.quality import quality_for_profile_id, quality_profiles_payload
 from akwarr.core.store import Store
 from akwarr.core.tmdb import TMDBClient
 from akwarr.core.worker import DownloadWorker
@@ -105,15 +106,7 @@ async def system_status() -> dict[str, Any]:
 @router.get("/qualityProfile")
 @router.get("/qualityprofile")
 async def quality_profiles() -> list[dict[str, Any]]:
-    return [
-        {
-            "id": 1,
-            "name": "Arabic 720p",
-            "upgradeAllowed": False,
-            "cutoff": 1,
-            "items": [{"quality": {"id": 1, "name": "720p"}, "allowed": True}],
-        }
-    ]
+    return quality_profiles_payload(get_settings())
 
 
 @router.get("/tag")
@@ -228,8 +221,9 @@ async def add_movie(body: MovieAddBody) -> dict[str, Any]:
     )
 
     if akwam_url and body.addOptions.get("searchForMovie", True) and not record.get("has_file"):
-        plan = MediaOrganizer(settings).movie_plan(title=title, year=year, quality="720p")
-        job_id = await s.create_job("movie", record["id"], str(plan.video))
+        quality = quality_for_profile_id(body.qualityProfileId, settings)
+        plan = MediaOrganizer(settings).movie_plan(title=title, year=year, quality=quality)
+        job_id = await s.create_job("movie", record["id"], str(plan.video), quality=quality)
         logger.info("Queued movie job %s for TMDB %s", job_id, body.tmdbId)
     elif not akwam_url:
         logger.warning("No Akwam match for TMDB %s (%s)", body.tmdbId, title)

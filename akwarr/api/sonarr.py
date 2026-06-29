@@ -15,6 +15,7 @@ from akwarr.api.auth import verify_api_key
 from akwarr.api.matching import best_arabic_akwam_match
 from akwarr.api.queue import queue_payload
 from akwarr.config import get_settings
+from akwarr.core.quality import quality_for_profile_id, quality_profiles_payload
 from akwarr.core.store import Store
 from akwarr.core.tmdb import TMDBClient
 from akwarr.core.worker import DownloadWorker
@@ -131,15 +132,7 @@ async def system_status() -> dict[str, Any]:
 @router.get("/qualityProfile")
 @router.get("/qualityprofile")
 async def quality_profiles() -> list[dict[str, Any]]:
-    return [
-        {
-            "id": 1,
-            "name": "Arabic 720p",
-            "upgradeAllowed": False,
-            "cutoff": 1,
-            "items": [{"quality": {"id": 1, "name": "720p"}, "allowed": True}],
-        }
-    ]
+    return quality_profiles_payload(get_settings())
 
 
 @router.get("/languageProfile")
@@ -314,15 +307,16 @@ async def add_series(body: SeriesAddBody) -> dict[str, Any]:
             )
             if ep_record.get("has_file"):
                 continue
+            quality = quality_for_profile_id(body.qualityProfileId, settings)
             plan = organizer.episode_plan(
                 series_title=title,
                 year=year,
                 season=season,
                 episode=ep.number,
                 episode_title=ep.title,
-                quality="720p",
+                quality=quality,
             )
-            await s.create_job("episode", ep_record["id"], str(plan.video))
+            await s.create_job("episode", ep_record["id"], str(plan.video), quality=quality)
 
     return await _series_payload(record)
 

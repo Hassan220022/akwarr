@@ -290,7 +290,12 @@ class AkwamScraper:
             break
         raise RuntimeError(f"Could not resolve direct download URL from {link_page_url}")
 
-    async def pick_download(self, metadata: AkwamMetadata) -> tuple[str, str]:
+    async def pick_download(
+        self,
+        metadata: AkwamMetadata,
+        *,
+        qualities: list[str] | None = None,
+    ) -> tuple[str, str]:
         """Return (quality_label, link_page_url) for preferred quality."""
         if not metadata.downloads:
             page = await self.fetch_metadata(metadata.url, kind=metadata.kind)
@@ -299,16 +304,21 @@ class AkwamScraper:
             raise RuntimeError(f"No download links on {metadata.url}")
 
         by_quality = {d.quality.lower(): d for d in metadata.downloads}
-        for q in self.qualities:
+        for q in qualities or self.qualities:
             key = q.lower()
             if key in by_quality:
                 return by_quality[key].quality, by_quality[key].link_url
         first = metadata.downloads[0]
         return first.quality, first.link_url
 
-    async def episode_download_url(self, episode_url: str) -> tuple[str, str]:
+    async def episode_download_url(
+        self,
+        episode_url: str,
+        *,
+        qualities: list[str] | None = None,
+    ) -> tuple[str, str]:
         meta = await self.fetch_metadata(episode_url, kind="series")
-        quality, link = await self.pick_download(meta)
+        quality, link = await self.pick_download(meta, qualities=qualities)
         direct = await self.resolve_direct_url(link)
         return quality, direct
 

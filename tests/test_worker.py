@@ -38,9 +38,12 @@ class FakeEpisodeStartStore(FakeStore):
             "akwam_url": "https://akwam.it/episode/1/show/الحلقة-2",
         }
 
+    async def get_series(self, series_id: int) -> dict:
+        return {"id": series_id, "quality_profile_id": 1, "title": "Test Show"}
+
 
 class FakeEpisodeScraper:
-    async def episode_download_url(self, url: str) -> tuple[str, str]:
+    async def episode_download_url(self, url: str, *, qualities=None) -> tuple[str, str]:
         return "720p", "https://cdn.example/show-s01e02.mp4"
 
 
@@ -384,6 +387,7 @@ async def test_sync_missing_series_episodes_queues_new_episodes(tmp_path: Path) 
     worker.settings = SimpleNamespace(
         monitor_missing_interval_seconds=0,
         is_sonarr=True,
+        preferred_qualities="720p,1080p,480p",
     )
     worker._last_release_scan = None
     worker.organizer = MediaOrganizer(
@@ -421,7 +425,7 @@ async def test_sync_missing_series_episodes_queues_new_episodes(tmp_path: Path) 
         async def has_blocking_job(self, kind: str, ref_id: int) -> bool:
             return False
 
-        async def create_job(self, kind: str, ref_id: int, dest_path: str) -> int:
+        async def create_job(self, kind: str, ref_id: int, dest_path: str, *, quality=None) -> int:
             self.jobs.append((kind, ref_id, dest_path))
             return 99
 
@@ -527,7 +531,11 @@ async def test_start_episode_job_rejected_on_radarr_shim() -> None:
 @pytest.mark.asyncio
 async def test_start_episode_job_downloads_to_current_staging_root(tmp_path: Path) -> None:
     worker = object.__new__(DownloadWorker)
-    worker.settings = SimpleNamespace(is_radarr=False, is_sonarr=True)
+    worker.settings = SimpleNamespace(
+        is_radarr=False,
+        is_sonarr=True,
+        preferred_qualities="720p,1080p,480p",
+    )
     worker.store = FakeEpisodeStartStore()
     worker.scraper = FakeEpisodeScraper()
     worker.aria2 = FakeEpisodeAria2()
@@ -550,6 +558,7 @@ async def test_start_episode_job_downloads_to_current_staging_root(tmp_path: Pat
                 "aria2_gid": "gid-episode",
                 "staging_path": str(tmp_path / "Download" / "akwarr-staging" / "job" / "s1e2.mp4"),
                 "error": "",
+                "quality": "720p",
             },
         )
     ]
@@ -621,11 +630,12 @@ async def test_import_episode_writes_jellyfin_metadata_under_series_root(tmp_pat
     staging_file.write_text("video")
 
     worker = object.__new__(DownloadWorker)
+    worker.settings = settings
     worker.store = FakeEpisodeImportStore()
     worker.organizer = MediaOrganizer(settings)
     worker.organizer.jellyfin = FakeJellyfin()
 
-    await worker._import_episode({"id": 9, "kind": "episode", "ref_id": 123}, staging_file)
+    await worker._import_episode({"id": 9, "kind": "episode", "ref_id": 123, "quality": "720p"}, staging_file)
 
     final = settings.series_path / "سيد الناس (2025)" / "Season 01" / "سيد الناس - S01E02 - الحلقة 2 720p.mp4"
     assert final.read_text() == "video"
